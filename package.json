@@ -1,0 +1,15 @@
+{
+  "name": "quickcut",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build:win": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle",
+    "test": "sh test/make-media.sh /tmp/qc-test && node test/ffargs.test.js /tmp/qc-test && cd src-tauri && cargo test"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

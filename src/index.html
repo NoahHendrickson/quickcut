@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QuickCut</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Icons (24px grid, 1.5px strokes) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/></symbol>
+      <symbol id="i-frame-back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-frame-fwd" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-slow" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4.5 16a7.5 7.5 0 1 1 15 0"/><path d="M12 16l-3.5-4"/><circle cx="12" cy="16" r="1.2" fill="currentColor"/></g></symbol>
+      <symbol id="i-sound" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></g></symbol>
+      <symbol id="i-split" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="6" width="7" height="12" rx="1.5"/><rect x="14" y="6" width="7" height="12" rx="1.5"/><path d="M12 3v18" stroke-dasharray="2 2"/></g></symbol>
+      <symbol id="i-help" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.8 9.6a2.3 2.3 0 1 1 3.3 2.1c-.7.4-1.1.9-1.1 1.6v.4"/><circle cx="12" cy="16.6" r=".6" fill="currentColor"/></g></symbol>
+      <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="M14 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5.5 12.5l4 4 9-9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+      <symbol id="i-film" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4"/></g></symbol>
+      <symbol id="i-speaker" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></g></symbol>
+      <symbol id="i-trim" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6.5" cy="7" r="2.5"/><circle cx="6.5" cy="17" r="2.5"/><path d="M8.6 8.4L19 16.5M8.6 15.6L19 7.5"/></g></symbol>
+      <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h1.5M6.5 9v6M9.5 5v14M12.5 8v8M15.5 3.5v17M18.5 9v6M21 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-to-start" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6v12"/><path d="M18 6.5v11a.6.6 0 0 1-.9.5l-8.4-5.5a.6.6 0 0 1 0-1l8.4-5.5a.6.6 0 0 1 .9.5z"/></g></symbol>
+      <symbol id="i-back5" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 9.5A7.5 7.5 0 1 1 5 13.5"/><path d="M5 5v4.5h4.5"/></g><text x="12.5" y="16.2" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" font-family="Inter, sans-serif">5</text></symbol>
+      <symbol id="i-fwd5" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 9.5A7.5 7.5 0 1 0 19 13.5"/><path d="M19 5v4.5h-4.5"/></g><text x="11.5" y="16.2" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" font-family="Inter, sans-serif">5</text></symbol>
+      <symbol id="i-zoom-in" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l4.5 4.5M10.5 8v5M8 10.5h5"/></g></symbol>
+      <symbol id="i-zoom-out" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l4.5 4.5M8 10.5h5"/></g></symbol>
+      <symbol id="i-zoom-sel" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5H4.5v14H7M17 5h2.5v14H17"/><path d="M8 12h8M10.5 9.5L8 12l2.5 2.5M13.5 9.5L16 12l-2.5 2.5"/></g></symbol>
+      <symbol id="i-zoomfx" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8V5.5a2 2 0 0 1 2-2H8M16 3.5h2.5a2 2 0 0 1 2 2V8M20.5 16v2.5a2 2 0 0 1-2 2H16M8 20.5H5.5a2 2 0 0 1-2-2V16"/><rect x="8" y="8" width="8" height="8" rx="1"/></g></symbol>
+      <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 15V4m0 0l-4 4m4-4l4 4M5 14v3.5A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5V14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </defs>
+  </svg>
+
+  <div id="app">
+    <!-- Top bar -->
+    <header id="topbar">
+      <div class="clip-nav">
+        <button class="icon-btn" id="btn-prev" title="Previous video in this folder (PgUp)" disabled><svg><use href="#i-chev-left"/></svg></button>
+        <button class="clip-title" id="btn-open" title="Open a video (Ctrl+O)">
+          <span id="clip-name">Open video</span>
+          <span id="clip-info"></span>
+        </button>
+        <button class="icon-btn" id="btn-next" title="Next video in this folder (PgDn)" disabled><svg><use href="#i-chev-right"/></svg></button>
+      </div>
+      <div class="top-actions">
+        <button class="btn update" id="btn-update" hidden></button>
+        <button class="icon-btn" id="btn-help" title="Keyboard shortcuts (?)"><svg><use href="#i-help"/></svg></button>
+        <button class="btn primary" id="btn-export" disabled><svg><use href="#i-export"/></svg><span id="btn-export-label">Export</span></button>
+      </div>
+    </header>
+
+    <!-- Video -->
+    <main id="stage">
+      <div id="vframe">
+        <video id="video" preload="auto" playsinline></video>
+        <div id="zoom-box" hidden title="Drag to choose what to zoom into"><i class="anchor"></i><span id="zoom-box-label"></span></div>
+      </div>
+      <div id="empty-state">
+        <div class="empty-icon"><svg><use href="#i-film"/></svg></div>
+        <div class="empty-title">Drop a video to start</div>
+        <div class="empty-sub">Trims keep your original quality, bit for bit.</div>
+        <button class="btn primary" id="btn-open-empty">Open video</button>
+      </div>
+      <div id="overlay" hidden>
+        <div class="overlay-card">
+          <div id="overlay-text">Working…</div>
+          <div class="bar"><div id="overlay-bar"></div></div>
+          <button class="btn primary" id="overlay-retry" hidden>Try again</button>
+        </div>
+      </div>
+      <div id="drop-target" hidden><div>Drop to open</div></div>
+      <div id="toast" hidden></div>
+    </main>
+
+    <!-- Editor: tools + playback, tool options, multi-lane timeline -->
+    <section id="editor">
+      <div id="ed-head">
+      <div id="tools" role="tablist">
+        <button class="tool" data-tool="trim" title="Trim (T)"><svg><use href="#i-trim"/></svg><span>Trim</span><i class="dot"></i></button>
+        <button class="tool" data-tool="slow" title="Slow motion (M)"><svg><use href="#i-slow"/></svg><span>Slow-mo</span><i class="dot"></i></button>
+        <button class="tool" data-tool="zoom" title="Zoom in and out (Z)"><svg><use href="#i-zoomfx"/></svg><span>Zoom</span><i class="dot"></i></button>
+        <button class="tool" data-tool="sound" title="Sound effects (N)"><svg><use href="#i-sound"/></svg><span>Sound</span><i class="dot"></i></button>
+        <button class="tool" data-tool="amp" title="Amplitude: the video's own volume (A)"><svg><use href="#i-wave"/></svg><span>Amplitude</span><i class="dot"></i></button>
+        <button class="tool" data-tool="split" title="Split into parts (P)"><svg><use href="#i-split"/></svg><span>Split</span><i class="dot"></i></button>
+      </div>
+      <div class="zoom" title="Zoom the timeline (or scroll on it)">
+        <button class="icon-btn" id="zoom-sel" title="Fit the timeline to your selection (F)"><svg><use href="#i-zoom-sel"/></svg></button>
+        <button class="icon-btn" id="zoom-out" title="Zoom out (−)"><svg><use href="#i-zoom-out"/></svg></button>
+        <input type="range" id="zoom-slider" min="0" max="1000" value="0" aria-label="Timeline zoom" />
+        <button class="icon-btn" id="zoom-in" title="Zoom in (+)"><svg><use href="#i-zoom-in"/></svg></button>
+        <button class="chip" id="zoom-fit" title="Show the whole video (0)">Fit</button>
+      </div>
+      <div class="transport">
+        <button class="icon-btn" id="btn-to-start" title="Go to the start (Home)"><svg><use href="#i-to-start"/></svg></button>
+        <button class="icon-btn" id="btn-back5" title="Back 5 seconds (J)"><svg><use href="#i-back5"/></svg></button>
+        <button class="icon-btn" id="btn-fwd5" title="Forward 5 seconds (L)"><svg><use href="#i-fwd5"/></svg></button>
+        <button class="play-btn" id="btn-play" title="Play / pause (Space)"><svg><use href="#i-play"/></svg></button>
+        <span class="clock"><span id="time-current">0:00.00</span><span class="dim"> / <span id="time-total">0:00.00</span></span></span>
+      </div>
+      </div>
+
+      <div id="options">
+        <!-- Trim -->
+        <div class="opt" data-for="trim">
+          <label class="tfield"><span>Start</span><input id="in-time" spellcheck="false" /></label>
+          <button class="btn sm" id="btn-set-in" title="Set the start to the playhead (I)">Set to playhead</button>
+          <span class="vsep"></span>
+          <label class="tfield"><span>End</span><input id="out-time" spellcheck="false" /></label>
+          <button class="btn sm" id="btn-set-out" title="Set the end to the playhead (O)">Set to playhead</button>
+          <span class="vsep"></span>
+          <span class="olabel">Length <b id="trim-length"></b></span>
+          <button class="text-btn quiet" id="btn-reset-trim">Reset</button>
+          <span class="hint">Or drag the handles on the video clip</span>
+        </div>
+
+        <!-- Slow motion -->
+        <div class="opt" data-for="slow">
+          <div class="when-off">
+            <button class="btn sm accent" id="slow-add"><svg><use href="#i-plus"/></svg>Add slow motion at the playhead</button>
+            <span class="hint">Then drag the purple band to where you want it</span>
+          </div>
+          <div class="when-on">
+            <span class="olabel">Speed</span>
+            <div class="chips" id="slow-speeds">
+              <button data-v="0.5">0.5×</button><button data-v="0.25">0.25×</button><button data-v="0.125">⅛×</button><button data-v="0.1">0.1×</button><button data-v="2">2× fast</button>
+            </div>
+            <span class="vsep"></span>
+            <span class="olabel">Sound</span>
+            <div class="chips" id="slow-audio"><button data-v="slow">Slowed</button><button data-v="mute">Muted</button></div>
+            <span class="vsep"></span>
+            <button class="text-btn quiet danger" id="slow-remove">Remove</button>
+          </div>
+        </div>
+
+        <!-- Zoom effect -->
+        <div class="opt" data-for="zoom">
+          <div class="when-off">
+            <button class="btn sm accent" id="zoom-add"><svg><use href="#i-plus"/></svg>Add zoom at the playhead</button>
+            <span class="hint">Then drag the box on the video to choose what to zoom into</span>
+          </div>
+          <div class="when-on">
+            <span class="olabel">Zoom</span>
+            <div class="chips" id="zoom-amounts"><button data-v="1.25">1.25×</button><button data-v="1.5">1.5×</button><button data-v="2">2×</button><button data-v="3">3×</button></div>
+            <span class="vsep"></span>
+            <span class="olabel">Ease</span>
+            <div class="chips" id="zoom-eases"><button data-v="smooth" title="Slow, gentle ease in and out">Smooth</button><button data-v="quick">Quick</button><button data-v="snap" title="Punch in">Snap</button></div>
+            <span class="vsep"></span>
+            <button class="text-btn quiet" id="zoom-add-another"><svg><use href="#i-plus"/></svg> Another</button>
+            <button class="text-btn quiet danger" id="zoom-remove">Remove</button>
+            <span class="hint">Drag the box on the video to aim</span>
+          </div>
+        </div>
+
+        <!-- Sound effects -->
+        <div class="opt" data-for="sound">
+          <div class="group" id="sfx-selected" hidden>
+            <span class="olabel strong" id="sfx-item-name"></span>
+            <input type="range" id="sfx-item-volume" min="0" max="2" step="0.05" title="Volume" />
+            <span id="sfx-item-volume-label" class="num"></span>
+            <button class="text-btn quiet danger" id="sfx-item-remove">Remove</button>
+            <span class="vsep"></span>
+          </div>
+          <div id="sfx-library" class="lib"></div>
+          <button class="btn sm" id="btn-add-sounds"><svg><use href="#i-plus"/></svg>Add sounds</button>
+          <span class="hint" id="sfx-hint"></span>
+        </div>
+
+        <!-- Amplitude -->
+        <div class="opt" data-for="amp">
+          <span class="olabel">Video's own sound</span>
+          <input type="range" id="orig-volume" min="0" max="2" step="0.05" value="1" />
+          <span id="orig-volume-label" class="num">100%</span>
+          <div class="chips" id="amp-presets">
+            <button data-v="0">Mute</button><button data-v="0.5">50%</button><button data-v="1">100%</button><button data-v="1.5">150%</button><button data-v="2">200%</button>
+          </div>
+          <span class="hint" id="amp-hint"></span>
+        </div>
+
+        <!-- Split -->
+        <div class="opt" data-for="split">
+          <div class="stepper">
+            <button class="icon-btn boxed" id="split-minus" title="Fewer parts"><svg><use href="#i-minus"/></svg></button>
+            <input id="split-count" type="number" min="2" max="99" value="4" />
+            <button class="icon-btn boxed" id="split-plus" title="More parts"><svg><use href="#i-plus"/></svg></button>
+            <span class="olabel">parts</span>
+          </div>
+          <div class="when-off">
+            <button class="btn sm accent" id="split-add">Split into parts</button>
+            <span class="hint">Each part is saved as its own video</span>
+          </div>
+          <div class="when-on">
+            <span class="vsep"></span>
+            <button class="text-btn" id="split-even">Even out</button>
+            <button class="text-btn quiet danger" id="split-remove">Don't split</button>
+            <span class="hint">Drag the orange lines to move a cut</span>
+          </div>
+        </div>
+
+        <!-- Export -->
+        <div class="opt export" data-for="export">
+          <div class="row">
+            <div class="seg" role="radiogroup" aria-label="How to save">
+              <button type="button" role="radio" data-mode="new" aria-checked="true">New video</button>
+              <button type="button" role="radio" data-mode="replace" aria-checked="false">Replace original</button>
+            </div>
+            <div id="save-new" class="group">
+              <div class="name-field">
+                <input id="save-name" spellcheck="false" aria-label="File name" />
+                <span id="save-ext"></span>
+              </div>
+              <button class="folder-line" id="save-folder-change" title="Choose another folder">
+                <svg><use href="#i-folder"/></svg><span id="save-folder"></span><span class="link">Change</span>
+              </button>
+              <button class="text-btn small" id="save-folder-reset" hidden>Use the video's folder</button>
+            </div>
+            <div id="save-replace" class="warn" hidden>Replaces <b id="replace-name"></b>. The original goes to the Recycle Bin, so you can restore it.</div>
+          </div>
+          <div class="row">
+            <span class="safe" id="save-safe"><svg><use href="#i-check"/></svg>Your original stays untouched</span>
+            <span id="export-mode"></span>
+            <span id="export-detail"></span>
+            <span id="save-note"></span>
+            <button class="text-btn quiet" id="adv-toggle">Advanced <svg><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="row" id="advanced" hidden>
+            <label class="check"><input type="checkbox" id="exact" /> Exact start frame (re-encodes the video)</label>
+            <label class="sfield">Quality
+              <select id="set-quality">
+                <option value="high">Visually lossless</option>
+                <option value="max">Maximum (huge files)</option>
+              </select>
+            </label>
+            <label class="sfield">Encoder
+              <select id="set-encoder">
+                <option value="auto">Graphics card if available</option>
+                <option value="cpu">Processor</option>
+              </select>
+            </label>
+            <span class="hint" id="set-encoders-found">Checking your hardware…</span>
+          </div>
+          <div class="row" id="export-progress" hidden>
+            <div class="bar grow"><div id="export-bar"></div></div>
+            <span id="export-status" class="num"></span>
+            <button class="text-btn" id="btn-cancel">Cancel</button>
+          </div>
+          <div class="row" id="export-result" hidden></div>
+        </div>
+      </div>
+
+
+      <!-- Timeline: ruler + lanes -->
+      <div id="tl">
+        <div id="tl-inner">
+          <div id="tl-ruler"><div id="tl-ticks"></div><span id="tl-hover" hidden></span></div>
+          <div class="lane" id="lane-zoom"><div id="tl-zooms"></div></div>
+          <div class="lane" id="lane-fx">
+            <div id="tl-slow" title="Slow motion. Drag to move, drag the ends to resize"><svg><use href="#i-slow"/></svg><span></span></div>
+          </div>
+          <div class="lane" id="lane-video">
+            <div id="tl-strip">
+              <div id="tl-thumbs"></div>
+              <div id="tl-slow-tint"></div>
+              <div id="tl-keyframe" title="The lossless cut starts at this keyframe"></div>
+              <div id="tl-split"></div>
+              <div id="tl-trim"></div>
+              <div id="tl-handle-in" class="tl-handle" title="Drag to set the start"><i></i></div>
+              <div id="tl-handle-out" class="tl-handle" title="Drag to set the end"><i></i></div>
+            </div>
+          </div>
+          <div class="lane" id="lane-audio">
+            <div id="tl-audio" title="The video's own sound. Click to change its volume">
+              <div id="tl-wave-img"></div>
+              <span class="clip-label"><svg><use href="#i-speaker"/></svg><span id="tl-audio-label">Video sound</span></span>
+            </div>
+          </div>
+          <div class="lane" id="lane-sfx"><div id="tl-sfx"></div></div>
+          <div id="tl-dim-left" class="tl-dim"></div>
+          <div id="tl-dim-right" class="tl-dim"></div>
+          <div id="tl-playhead"><b></b></div>
+          <div id="tl-bubble" hidden></div>
+        </div>
+      </div>
+      <div id="tl-scroll" title="Drag to move along the timeline (scroll on the timeline to zoom)"><div id="tl-thumb"></div></div>
+    </section>
+  </div>
+
+  <dialog id="help">
+    <form method="dialog">
+      <div class="dlg-title">Shortcuts <button class="icon-btn" value="close" aria-label="Close"><svg><use href="#i-x"/></svg></button></div>
+      <table class="keys">
+        <tr><td><kbd>Space</kbd></td><td>Play / pause</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>One frame (hold <kbd>Shift</kbd> for 1 second)</td></tr>
+        <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Start / end at the playhead</td></tr>
+        <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>Drop a sound effect</td></tr>
+        <tr><td><kbd>T</kbd> <kbd>M</kbd> <kbd>Z</kbd> <kbd>N</kbd> <kbd>A</kbd> <kbd>P</kbd></td><td>Trim, Slow-mo, Zoom, Sound, Amplitude, Split</td></tr>
+        <tr><td><kbd>S</kbd></td><td>Add slow-mo at the playhead</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>S</kbd></td><td>Export</td></tr>
+        <tr><td><kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>Previous / next video in the folder</td></tr>
+        <tr><td>Scroll on the timeline</td><td>Zoom in / out (also <kbd>+</kbd> <kbd>−</kbd>)</td></tr>
+        <tr><td><kbd>F</kbd> / <kbd>0</kbd></td><td>Fit the timeline to your selection / show everything</td></tr>
+        <tr><td><kbd>Shift</kbd> + drag a handle</td><td>Fine adjust (10× slower)</td></tr>
+        <tr><td><kbd>Delete</kbd></td><td>Remove the selected sound</td></tr>
+      </table>
+      <div class="about">
+        <span>QuickCut <b id="app-version"></b></span>
+        <span id="update-status" class="dim"></span>
+        <button type="button" class="text-btn" id="btn-check-update">Check for updates</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+[package]
+name = "quickcut"
+version = "1.0.0"
+edition = "2021"
+description = "Fast, lossless video trimming"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time"] }
+trash = "5.3.0"
+tauri-plugin-updater = "2"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
