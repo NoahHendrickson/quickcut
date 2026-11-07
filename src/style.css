@@ -729,17 +729,17 @@ body.magnified.panning #vframe { cursor: grabbing; }
 .w-quick { display: none; }
 body.quicktrim .w-normal { display: none; }
 body.quicktrim .w-quick { display: flex; gap: 12px; }
-body.quicktrim #w-scrub { height: 40px; margin: 0 8px; } /* room for the handles at either end */
-body.quicktrim #w-track, body.quicktrim #w-scrub:hover #w-track { top: 25px; height: 3px; background: rgba(255, 255, 255, 0.22); }
+body.quicktrim #w-scrub { height: 24px; margin: 0 18px; } /* same height as normal: centred on the time labels; room for the knobs outside either end */
+body.quicktrim #w-track, body.quicktrim #w-scrub:hover #w-track { top: 10.5px; height: 3px; background: rgba(255, 255, 255, 0.22); }
 body.quicktrim #w-progress, body.quicktrim #w-loop, body.quicktrim .w-lhandle, body.quicktrim #w-buffer { display: none; }
-body.quicktrim #w-head, body.quicktrim #w-scrub:hover #w-head { top: 3px; width: 11px; height: 11px; margin-left: -5.5px; transform: none; box-shadow: 0 0 0 2px var(--panel); }
-body.quicktrim #w-head::after { content: ""; position: absolute; left: 4.5px; top: 11px; width: 2px; height: 12px; background: #fff; border-radius: 1px; }
+body.quicktrim #w-head, body.quicktrim #w-scrub:hover #w-head { top: -10px; width: 11px; height: 11px; margin-left: -5.5px; transform: none; box-shadow: 0 0 0 2px var(--panel); }
+body.quicktrim #w-head::after { content: ""; position: absolute; left: 4.5px; top: 11px; width: 2px; height: 11px; background: #fff; border-radius: 1px; }
 .w-dim { display: none; }
 #w-sel, .w-handle { display: none; position: absolute; }
 body.quicktrim #w-sel { display: block; }
 body.quicktrim .w-handle { display: grid; }
-#w-sel { top: 23.5px; height: 6px; border-radius: 3px; background: var(--trim); z-index: 2; pointer-events: none; }
-.w-handle { top: 17px; width: 12px; height: 19px; margin-left: -6px; border-radius: 5px; background: var(--trim); box-shadow: 0 0 0 2px var(--panel); z-index: 3; cursor: ew-resize; place-items: center; }
+#w-sel { top: 9px; height: 6px; border-radius: 3px; background: var(--trim); z-index: 2; pointer-events: none; }
+.w-handle { top: 2.5px; width: 12px; height: 19px; margin-left: -12px; border-radius: 5px; background: var(--trim); box-shadow: 0 0 0 2px var(--panel); z-index: 3; cursor: ew-resize; place-items: center; }
 .w-handle::before { content: ""; position: absolute; inset: -8px -8px; } /* easier to grab */
 .w-handle i { width: 2px; height: 9px; border-radius: 1px; background: rgba(15, 30, 50, 0.55); pointer-events: none; }
 .w-handle:hover, .w-handle.active { background: #c2ddff; }
@@ -851,9 +851,47 @@ table.keys td:first-child { width: 44%; white-space: nowrap; color: var(--text);
 /* Shown while watching a preview copy instead of the original */
 .proxy-chip { height: 24px; padding: 0 8px; margin-right: 4px; display: inline-flex; align-items: center; border-radius: 6px; background: rgba(245, 195, 59, 0.16); color: var(--yellow); font: 400 11px var(--mono); white-space: nowrap; cursor: help; }
 
-/* Quick trim: the trim bar gets the whole width on its own row, controls below.
-   Its width then never depends on the info text, so handles can't shift when that text changes
-   (e.g. the keyframe note appearing after you let go of the start handle). */
-body.quicktrim .pbar { flex-wrap: wrap; row-gap: 10px; }
-body.quicktrim .pb-seek { order: -1; flex: 1 0 100%; }
-body.quicktrim .w-quick { margin-left: auto; min-width: 0; }
+/* Quick trim stays on one line: fixed-width buttons, so the trim bar never changes size. */
+body.quicktrim .w-quick { width: 212px; justify-content: flex-end; }
+#w-time { text-align: right; }
+#w-total { text-align: left; }
+#w-save-opts { min-width: 0; padding: 0 9px; border-left-color: rgba(0, 0, 0, 0.25); }
+#w-save-opts svg.caret { color: #fff; }
+#w-save-split.changed > .pb-btn { background: var(--blue); color: #fff; }
+
+/* Tooltips: a rounded pill with a sturdy tail that flares into it (concave curves) */
+#w-hover.tip, #w-bubble.tip, #tl-hover.tip, #tl-bubble.tip {
+  --tail: 0px;
+  position: absolute;
+  top: auto;
+  height: auto;
+  transform: translateX(-50%);
+  padding: 5px 11px;
+  border: none;
+  border-radius: 13px;
+  background: #0b0b0b;
+  color: #fff;
+  font: 600 12px/16px var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  z-index: 9;
+}
+.tip::after { content: ""; position: absolute; left: calc(50% + var(--tail)); top: calc(100% - 1px); width: 28px; height: 12px; margin-left: -14px; background: inherit; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 12'%3E%3Cpath d='M0 0C7.5 0 10.2 2.4 11.7 6.6Q14 12.6 16.3 6.6C17.8 2.4 20.5 0 28 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 12'%3E%3Cpath d='M0 0C7.5 0 10.2 2.4 11.7 6.6Q14 12.6 16.3 6.6C17.8 2.4 20.5 0 28 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; }
+.tip small { display: block; font: 400 10px/14px var(--mono); color: rgba(255, 255, 255, 0.62); }
+#w-bubble.tip.loop { background: var(--yellow); color: #1e1e1e; }
+/* Where the tail's tip lands */
+#w-hover.tip { bottom: 30px; }          /* over the track */
+#w-bubble.tip { bottom: 35px; }         /* over a loop end */
+body.quicktrim #w-bubble.tip { bottom: 35px; } /* over a trim knob */
+body.quicktrim #w-hover.tip { bottom: 48px; }  /* above the playhead dot */
+#tl-hover.tip, #tl-bubble.tip { top: -4px; }
+
+/* Knobs sit just outside the kept part (4px gap), so the playhead at the start/end shows beside them, not on them. */
+#w-h-in { margin-left: -16px; }
+#w-h-out { margin-left: 4px; }
+/* While a knob's tooltip is up, the playhead dot (at that same time) steps aside. */
+body.knobtip #w-head { opacity: 0; }
+#w-save-split.single > #w-trim-save { border-radius: 8px; }

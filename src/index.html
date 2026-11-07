@@ -106,14 +106,14 @@
           <div id="w-la" class="w-lhandle" title="Drag to move the loop start (I sets it to the playhead)"></div>
           <div id="w-lb" class="w-lhandle" title="Drag to move the loop end (O sets it to the playhead)"></div>
           <div id="w-head"></div>
-          <span id="w-hover" hidden></span>
+          <span id="w-hover" class="tip" hidden></span>
           <!-- Quick trim -->
           <div id="w-dim-l" class="w-dim"></div>
           <div id="w-dim-r" class="w-dim"></div>
           <div id="w-sel"></div>
           <div id="w-h-in" class="w-handle" title="Drag to set the start"><i></i></div>
           <div id="w-h-out" class="w-handle" title="Drag to set the end"><i></i></div>
-          <span id="w-bubble" hidden></span>
+          <span id="w-bubble" class="tip" hidden></span>
         </div>
         <span class="pb-time" id="w-total">0:00</span>
       </div>
@@ -141,13 +141,15 @@
         <button class="pb-square" id="w-fullscreen" title="Full screen (F, or double-click the video)"><svg><use href="#i-fullscreen"/></svg></button>
       </div>
       <div class="pb-group w-quick">
-        <span id="w-trim-info"></span>
         <div id="w-quick-edit" class="group">
           <button class="pb-btn" id="w-trim-cancel" title="Esc">Cancel</button>
-          <button class="pb-btn primary" id="w-trim-save" title="Saves a new video. Your original stays untouched (Enter)">Save trim</button>
+          <div class="pb-split" id="w-save-split">
+            <button class="pb-btn primary" id="w-trim-save" title="Saves a new video. Your original stays untouched (Enter)">Save trim</button>
+            <button class="pb-btn primary" id="w-save-opts" title="Lossless or frame-exact"><svg class="caret" viewBox="0 0 9 5"><path d="M4.5 4.5C5.554 4.5 8.5.5 8.5.5L.5.5S3.446 4.5 4.5 4.5Z" fill="currentColor" stroke="currentColor" stroke-linejoin="round"/></svg></button>
+          </div>
         </div>
         <div id="w-quick-done" class="group" hidden>
-          <span class="w-saved"><svg><use href="#i-check"/></svg><span id="w-saved-name"></span></span>
+          <span id="w-saved-name" hidden></span>
           <button class="pb-btn" id="w-saved-reveal">Show in folder</button>
           <button class="pb-btn primary" id="w-trim-done">Done</button>
         </div>
@@ -245,7 +247,7 @@
         <div id="tl-inner">
           <div class="tl-row tl-row-ruler">
             <div class="tl-head tl-clock"><span id="time-current">0:00.00</span> / <span id="time-total">0:00.00</span></div>
-            <div id="tl-ruler"><div id="tl-ticks"></div><span id="tl-hover" hidden></span></div>
+            <div id="tl-ruler"><div id="tl-ticks"></div><span id="tl-hover" class="tip" hidden></span></div>
           </div>
 
           <div class="tl-row" data-row="trim">
@@ -348,7 +350,7 @@
             <div id="tl-dim-left" class="tl-dim"></div>
             <div id="tl-dim-right" class="tl-dim"></div>
             <div id="tl-playhead"><b></b></div>
-            <div id="tl-bubble" hidden></div>
+            <div id="tl-bubble" class="tip" hidden></div>
           </div>
         </div>
       </div>

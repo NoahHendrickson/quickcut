@@ -64,6 +64,7 @@ export function parseProbe(json) {
     hdr: !!v && ['smpte2084', 'arib-std-b67'].includes(v.color_transfer),
     audioCount: audio.length,
     audioCodec: audio[0] ? audio[0].codec_name : null,
+    audioCodecs: audio.map((a) => a.codec_name),
     sampleRate: audio[0] ? Number(audio[0].sample_rate) || 48000 : 48000,
     // MP4/MOV seek by PTS. For other containers ffmpeg pulls the seek point back
     // ~0.13s when the video has B-frames, so lossless cuts must aim a bit later.
@@ -181,6 +182,20 @@ export function zoomGraph(zooms, w, h, inp, out, pixfmt = '') {
     `${/^[a-z0-9]+$/.test(pixfmt) ? `,format=${pixfmt}` : ''}${out}`;
 }
 
+// Codecs an MP4 can hold as-is (stream copy, no re-encoding).
+const MP4_VIDEO = ['h264', 'hevc', 'av1', 'vp9', 'mpeg4'];
+const MP4_AUDIO = ['aac', 'mp3', 'opus', 'ac3', 'eac3', 'alac'];
+/**
+ * Can a lossless copy start on any frame? MP4/MOV "edit lists" can: the copy begins at the
+ * keyframe before (frames only decode from a keyframe) and the file tells players to start
+ * at the chosen frame, hiding the lead-in. True for MP4/MOV, and for other containers whose
+ * codecs fit in an MP4 (those are saved as .mp4).
+ */
+export function canExactCopy(src) {
+  if (['mp4', 'm4v', 'mov'].includes((src.ext || '').toLowerCase())) return true;
+  return MP4_VIDEO.includes(src.vcodec) && (src.audioCodecs || []).every((c) => MP4_AUDIO.includes(c));
+}
+
 /** Choose the keyframe the lossless cut will actually start on. */
 export function snapToKeyframe(keyframes, t) {
   if (!keyframes || !keyframes.length) return 0;
@@ -206,14 +221,19 @@ export function planExport(src, edit) {
   const freezes = (edit.freezes || [])
     .filter((f) => f.hold > 0.01 && f.at >= edit.inT - 1e-6 && f.at <= edit.outT + 1e-6)
     .sort((a, b) => a.at - b.at);
-  const copyVideo = !slowOn && !edit.exact && zoomsIn.length === 0 && freezes.length === 0 && src.hasVideo;
+  // A start between keyframes: an edit list keeps it lossless; otherwise "exact" re-encodes.
+  // (Keyframe not looked up yet? Assume there may be one: the edit-list path is right either way.)
+  const leadIn = edit.keyframeIn == null ? edit.inT > 0.0005 : edit.keyframeIn < edit.inT - 0.0005;
+  const exactNeedsEncode = !!edit.exact && leadIn && !canExactCopy(src);
+  const copyVideo = !slowOn && !exactNeedsEncode && zoomsIn.length === 0 && freezes.length === 0 && src.hasVideo;
+  const editList = copyVideo && leadIn && canExactCopy(src);
   const reasons = [];
   if (slowOn) reasons.push(edit.slow.speed < 1 ? 'slow motion' : 'speed-up');
   if (zoomsIn.length) reasons.push('zoom');
   if (freezes.length) reasons.push('freeze frame');
-  if (edit.exact) reasons.push('frame-exact start');
+  if (exactNeedsEncode) reasons.push('frame-exact start');
 
-  const start = copyVideo ? Math.min(edit.keyframeIn ?? edit.inT, edit.inT) : edit.inT;
+  const start = copyVideo && !editList ? Math.min(edit.keyframeIn ?? edit.inT, edit.inT) : edit.inT;
   const dur = Math.max(0, edit.outT - start);
 
   // Speed segments in output-relative time (0 = start).
@@ -265,6 +285,7 @@ export function planExport(src, edit) {
   let ext = (src.ext || 'mp4').toLowerCase();
   if (copyVideo) {
     if (!COPY_EXTS.includes(ext)) ext = 'mkv';
+    if (editList && !['mp4', 'm4v', 'mov'].includes(ext)) ext = 'mp4'; // edit lists are an MP4/MOV feature
     if (audioProcessed && ext === 'webm') ext = 'mkv'; // AAC can't go in WebM
   } else {
     ext = ext === 'mkv' ? 'mkv' : ext === 'mov' ? 'mov' : 'mp4';
@@ -290,8 +311,10 @@ export function planExport(src, edit) {
     freezes, segmented: slowOn || freezes.length > 0, mapTime,
     muteSlow: slowOn && !!edit.slow.muteAudio,
     snapDelta: copyVideo ? edit.inT - start : 0,
+    // Lossless, but starting on the exact frame (the keyframe lead-in is hidden by an edit list).
+    editList,
     // How far past the keyframe to put -ss so ffmpeg lands exactly on it.
-    seekPad: copyVideo ? (src.seekToPts ? 0.001 : 0.135) : 0,
+    seekPad: copyVideo && !editList ? (src.seekToPts ? 0.001 : 0.135) : 0,
     // Where stream copy stops reading. When the out-point is the next part's
     // keyframe, stop just before that keyframe's decode time so B-frame
     // reordering can't pull it (and its neighbours) into this part.
@@ -366,6 +389,17 @@ export function buildExportArgs(src, plan, opts) {
   let audioInput = 0;
   if (plan.mode === 'reencode') {
     args.push('-hwaccel', 'auto', '-ss', fmt(plan.start), '-t', fmt(plan.dur), '-i', inputPath);
+  } else if (plan.editList) {
+    // Exact start, still a stream copy: ffmpeg reads from the keyframe before the start and
+    // gives the lead-in negative timestamps; the MP4/MOV muxer then writes an edit list that
+    // makes players begin on the chosen frame. The decoded audio input starts there exactly.
+    // (Half a millisecond early as a safety margin against rounding: far less than a frame.)
+    const ss = Math.max(0, plan.start - 0.0005);
+    args.push('-ss', fmt(ss), '-t', fmt(plan.dur), '-i', inputPath);
+    if (plan.mode === 'copy-video' && src.audioCount > 0) {
+      args.push('-ss', fmt(ss), '-t', fmt(plan.dur), '-i', inputPath);
+      audioInput = 1;
+    }
   } else {
     // Stream copy: aim just past the keyframe so the demuxer lands exactly on it.
     const ss = plan.start + plan.seekPad;
@@ -448,7 +482,10 @@ export function buildExportArgs(src, plan, opts) {
   }
 
   args.push('-map_metadata', '0', '-map_chapters', '-1');
-  if (plan.mode !== 'reencode') args.push('-avoid_negative_ts', 'make_zero');
+  // (Not for edit-list copies: their lead-in must keep its negative timestamps to stay hidden.)
+  if (plan.mode !== 'reencode' && !plan.editList) args.push('-avoid_negative_ts', 'make_zero');
+  // HEVC in MP4/MOV as hvc1, the form every player (incl. Apple's) accepts.
+  if (plan.mode !== 'reencode' && src.vcodec === 'hevc' && ['mp4', 'm4v', 'mov'].includes(plan.ext)) args.push('-tag:v', 'hvc1');
   if (['mp4', 'mov', 'm4v'].includes(plan.ext)) args.push('-movflags', '+faststart');
   args.push('-max_muxing_queue_size', '4096');
   args.push(outputPath);

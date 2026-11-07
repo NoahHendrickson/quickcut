@@ -1,7 +1,7 @@
 import {
   parseProbe, planExport, buildExportArgs, buildProxyArgs, pickEncoder, snapToKeyframe,
   ENCODER_CANDIDATES, ENCODERS, VENDOR_LABEL, formatTime, parseTime,
-  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, zoomRamp, parseDuration, fixedSplitPoints,
+  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, zoomRamp, parseDuration, fixedSplitPoints, canExactCopy,
 } from './ffargs.js';
 
 const T = window.__TAURI__;
@@ -134,7 +134,7 @@ async function openVideo(path) {
   stopAllSfx();
   Object.assign(S, {
     path, info, usingProxy: false, inT: 0, outT: info.duration, sfx: [], selectedSfx: null, zooms: [], selectedZoom: null, freezes: [], selectedFreeze: null,
-    origVolume: 1, exact: false, keyframeIn: null, keyframeFor: null, thumbs: null, detail: null, wave: null, confirmReplace: false,
+    origVolume: 1, exact: !canExactCopy(info), keyframeIn: null, keyframeFor: null, thumbs: null, detail: null, wave: null, confirmReplace: false,
     loop: { a: null, b: null }, mag: { scale: 1, x: 0, y: 0 }, quick: null,
     view: { start: 0, end: Math.max(info.duration, 0.1) },
   });
@@ -804,7 +804,7 @@ function renderTimeline() {
   }
 
   const kf = $('#tl-keyframe');
-  const showKf = has && !S.exact && !slowActive() && S.keyframeIn != null && S.keyframeFor === S.inT && S.inT - S.keyframeIn > 0.0005;
+  const showKf = has && !S.exact && !canExactCopy(S.info) && !slowActive() && S.keyframeIn != null && S.keyframeFor === S.inT && S.inT - S.keyframeIn > 0.0005;
   kf.hidden = !showKf;
   if (showKf) place(kf, tToX(S.keyframeIn));
 
@@ -934,7 +934,7 @@ function bubble(t) {
   $('#tl-hover').hidden = true;
   b.hidden = false;
   b.textContent = drag && drag.fine ? `${fmt(t)} · fine` : fmt(t);
-  b.style.left = `${clamp(tToX(t), 24, strip.clientWidth - 24)}px`;
+  placeTip(b, tToX(t), strip.clientWidth);
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,6 +1237,8 @@ function syncAll() {
   renderRows();
   // Export
   $('#exact').checked = S.exact;
+  // MP4/MOV-friendly files always start on the exact frame, losslessly: nothing to choose.
+  $('#exact').closest('label').hidden = has && canExactCopy(S.info);
   $('#set-quality').value = settings.quality;
   $('#set-encoder').value = settings.encoder;
   applyPreviewVolume();
@@ -1277,7 +1279,7 @@ function updateExportInfo() {
   if (plan.mode === 'reencode') {
     const enc = pickEncoder(S.info, S.encoders, settings.encoder);
     lines.push(`Uses your ${enc.vendor === 'cpu' ? 'processor' : VENDOR_LABEL[enc.vendor]}.`);
-  } else if (S.keyframeFor !== S.inT) {
+  } else if (S.keyframeFor !== S.inT && !canExactCopy(S.info)) {
     lines.push('Finding the nearest keyframe…');
   } else if (plan.snapDelta > 0.0005) {
     lines.push(`Starts ${plan.snapDelta.toFixed(2)}s early, at the nearest keyframe. "Exact start frame" under Advanced avoids that.`);
@@ -1570,6 +1572,7 @@ function renderWatchTime(t) {
   $('#w-head').style.left = pct;
   const n = frameAt(t);
   const time = $('#w-time');
+  if (S.quick && S.mode === 'watch') return; // while trimming the labels show the trim's start and end
   time.textContent = settings.showFrames ? `Frame ${n.toLocaleString()}` : fmt(t);
   time.title = `${settings.showFrames ? fmt(t) : `Frame ${n.toLocaleString()}`} of ${frameCount().toLocaleString()} · ${Math.round(fps() * 100) / 100} fps\nClick to show ${settings.showFrames ? 'the time' : 'frame numbers'}`;
 }
@@ -1578,6 +1581,13 @@ function renderWatch() {
   $('#w-speed-label').textContent = fmtRate(r);
   $('#w-speed').classList.toggle('changed', Math.abs(r - 1) > 1e-6);
   $('#w-total').textContent = !S.path ? '0:00' : settings.showFrames ? `of ${frameCount().toLocaleString()}` : formatTime(duration(), false);
+  if (S.path) {
+    // Fixed widths (monospace): the bar never changes size as the numbers change.
+    const d = duration();
+    const longest = (a) => Math.max(...a.map((x) => x.length));
+    $('#w-time').style.minWidth = `${longest([fmt(d), `Frame ${frameCount().toLocaleString()}`])}ch`;
+    $('#w-total').style.minWidth = `${longest([fmt(d), `of ${frameCount().toLocaleString()}`])}ch`;
+  }
   // Loop: yellow button, yellow section with two draggable ends on the seek bar
   const { a, b } = S.loop;
   const on = !!S.path && a != null && b != null;
@@ -1611,14 +1621,26 @@ const scrubT = (e) => {
   return clamp((e.clientX - r.left) / r.width, 0, 1) * duration();
 };
 /** The time bubble above the seek bar while dragging a handle. */
-function scrubBubble(t, kind) {
+/** Time tooltip over the bar. dx: nudge it onto a trim knob (they sit just outside their time). */
+function scrubBubble(t, kind, sub = '', dx = 0) {
   const b = $('#w-bubble');
+  document.body.classList.toggle('knobtip', t != null && !!dx);
   if (t == null) return (b.hidden = true);
   const w = scrub.clientWidth;
   b.hidden = false;
-  b.className = kind || '';
-  b.textContent = fmt(t);
-  b.style.left = `${clamp((t / (duration() || 1)) * w, 30, w - 30)}px`;
+  b.className = `tip ${kind || ''}`;
+  b.innerHTML = `<span></span>${sub ? '<small></small>' : ''}`;
+  b.firstChild.textContent = fmt(t);
+  if (sub) b.lastChild.textContent = sub;
+  placeTip(b, (t / (duration() || 1)) * w + dx, w);
+}
+const KNOB_DX = { in: -10, out: 10 }; // knob centres: 4px gap + half of a 12px knob
+/** Put a tooltip over x, kept inside [0, w]; its tail still points at x. */
+function placeTip(el, x, w) {
+  const half = Math.max(30, el.offsetWidth / 2 + 2);
+  const left = clamp(x, half, Math.max(half, w - half));
+  el.style.left = `${left}px`;
+  el.style.setProperty('--tail', `${clamp(x - left, -half + 14, half - 14)}px`);
 }
 scrub.addEventListener('pointerdown', (e) => {
   if (!S.path || e.button !== 0) return;
@@ -1648,7 +1670,7 @@ scrub.addEventListener('pointermove', (e) => {
   const r = scrub.getBoundingClientRect();
   hv.hidden = false;
   hv.textContent = fmt(scrubT(e));
-  hv.style.left = `${clamp(e.clientX - r.left, 30, r.width - 30)}px`;
+  placeTip(hv, e.clientX - r.left, r.width);
 });
 scrub.addEventListener('pointerleave', () => ($('#w-hover').hidden = true));
 
@@ -1859,7 +1881,7 @@ new ResizeObserver(() => { clampMag(); lastMagCss = ''; }).observe(vframe);
 function startQuickTrim() {
   if (!S.path || S.busy) return;
   video.pause();
-  S.quick = { prevIn: S.inT, prevOut: S.outT, saved: null, exact: false };
+  S.quick = { prevIn: S.inT, prevOut: S.outT, saved: null, exact: !canExactCopy(S.info) };
   // Start from the A-B loop if one is set, else the whole clip.
   const { a, b } = S.loop;
   if (a != null && b != null) {
@@ -1894,20 +1916,23 @@ function dragQuickHandle(e, which) {
   $('#w-hover').hidden = true;
   scrub.setPointerCapture(e.pointerId);
   video.pause();
+  scrubBubble(which === 'in' ? S.inT : S.outT, '', '', KNOB_DX[which]);
+  const grab = scrubT(e) - (which === 'in' ? S.inT : S.outT);
   const move = (ev) => {
-    const t = snapFrame(scrubT(ev));
+    const t = snapFrame(scrubT(ev) - grab);
     const minLen = Math.max(1 / fps(), 0.05);
     if (which === 'in') S.inT = clamp(t, 0, S.outT - minLen);
     else S.outT = clamp(t, S.inT + minLen, duration());
     const at = which === 'in' ? S.inT : S.outT;
     seek(at); // show the exact frame under the handle
-    scrubBubble(at);
+    scrubBubble(at, '', '', KNOB_DX[which]);
     renderQuickTrim();
   };
   const up = () => {
     handle.classList.remove('active');
     quickDragging = false;
     scrubBubble(null);
+    if (hoverHandle) quickTip(hoverHandle);
     scrub.removeEventListener('pointermove', move);
     scrub.removeEventListener('pointerup', up);
     requestKeyframe();
@@ -1931,15 +1956,21 @@ function renderQuickTrim() {
   $('#w-sel').style.width = `${po - pi}%`;
   $('#w-h-in').style.left = `${pi}%`;
   $('#w-h-out').style.left = `${po}%`;
-  // Lossless cuts start on a keyframe: say so when that moves the start.
+  // Lossless cuts start on a keyframe: the start knob's tooltip and Save ▾ say where.
   const plan = planExport(S.info, { ...quickEdit(), exact: false });
-  let note = '';
-  if (q.saved) note = '';
-  else if (q.exact) note = '<span class="dim">exact start (re-encodes) · <a href="#" data-a="lossless">keep lossless</a></span>';
-  else if (S.keyframeFor === S.inT && plan.snapDelta > 0.0005) {
-    note = `<span class="dim">lossless cut starts ${plan.snapDelta.toFixed(2)}s earlier, at a keyframe · <a href="#" data-a="exact">make exact</a></span>`;
-  }
-  $('#w-trim-info').innerHTML = `<span class="w-trim-main">Trim <b>${fmt(S.inT)}</b> → <b>${fmt(S.outT)}</b> · ${fmt(S.outT - S.inT)}</span>${note}`;
+  q.lead = !q.exact && S.keyframeFor === S.inT && plan.snapDelta > 0.0005 ? plan.snapDelta : 0;
+  // The labels either side of the bar show the trim's start and end.
+  $('#w-time').textContent = fmt(S.inT);
+  $('#w-total').textContent = fmt(S.outT);
+  $('#w-time').title = 'Start of the trim';
+  $('#w-total').title = `End of the trim · ${fmt(S.outT - S.inT)} long`;
+  const exactCopy = canExactCopy(S.info);
+  $('#w-trim-save').title = `Save these ${fmt(S.outT - S.inT)} as a new video, ${exactCopy ? 'lossless, starting on the exact frame' : q.exact ? 'starting on the exact frame (re-encodes)' : q.lead ? `lossless (starts ${q.lead.toFixed(2)}s earlier, at a keyframe)` : 'lossless'}. Your original stays untouched (Enter)`;
+  // Only files that can't start on an exact frame losslessly have a choice to make.
+  $('#w-save-opts').hidden = exactCopy;
+  $('#w-save-split').classList.toggle('single', exactCopy);
+  $('#w-save-opts').disabled = !!S.busy;
+  if (hoverHandle && !quickDragging) quickTip(hoverHandle); // e.g. the keyframe just arrived
   $('#w-quick-edit').hidden = !!q.saved;
   $('#w-quick-done').hidden = !q.saved;
   if (q.saved) $('#w-saved-name').textContent = `Saved ${basename(q.saved)}`;
@@ -1964,12 +1995,13 @@ async function quickSave() {
   let outputPath = null;
   try {
     const edit = quickEdit();
-    if (!edit.exact) edit.keyframeIn = await ensureKeyframe();
-    else if (S.encodersReady) await S.encodersReady;
+    edit.keyframeIn = await ensureKeyframe(); // decides lossless-exact vs keyframe vs re-encode
     const plan = planExport(S.info, edit);
+    if (plan.mode === 'reencode' && S.encodersReady) await S.encodersReady;
     outputPath = await invoke('output_path', { src: S.path, ext: plan.ext, name: defaultSaveName(), dir: settings.outDir || null });
     await runExport(plan, outputPath);
     if (S.quick) S.quick.saved = outputPath;
+    toast(`Saved ${basename(outputPath)}`, 3500);
   } catch (e) {
     if (outputPath) invoke('remove_file', { path: outputPath });
     if (String(e) !== 'cancelled') toast(`Couldn't save the trim: ${String(e).slice(0, 160)}`, 6000);
@@ -1979,12 +2011,26 @@ async function quickSave() {
   }
 }
 $('#w-trim').addEventListener('click', startQuickTrim);
-$('#w-trim-info').addEventListener('click', (e) => {
-  const a = e.target.closest('a')?.dataset.a;
-  if (!a || !S.quick) return;
-  e.preventDefault();
-  S.quick.exact = a === 'exact';
-  renderQuickTrim();
+// Hover a handle: its exact time (and where a lossless cut really starts)
+const quickTip = (which) => {
+  const q = S.quick;
+  const t = which === 'in' ? S.inT : S.outT;
+  scrubBubble(t, '', which === 'in' && q && q.lead ? `lossless from ${fmt(t - q.lead)}` : '', KNOB_DX[which]);
+};
+let hoverHandle = null;
+for (const [sel, which] of [['#w-h-in', 'in'], ['#w-h-out', 'out']]) {
+  $(sel).addEventListener('pointerenter', () => { hoverHandle = which; if (S.quick && !quickDragging) quickTip(which); });
+  $(sel).addEventListener('pointerleave', () => { hoverHandle = null; if (!quickDragging) scrubBubble(null); });
+}
+// Save ▾: lossless (instant, starts on a keyframe) or frame-exact (re-encodes)
+$('#w-save-opts').addEventListener('click', (e) => {
+  const q = S.quick;
+  if (!q || q.saved || S.busy) return;
+  openMenu(e.currentTarget, [
+    { title: 'Save the trim' },
+    { label: 'Lossless', hint: q.lead ? `starts ${q.lead.toFixed(2)}s early, on a keyframe` : 'original quality, instant', on: !q.exact, run: () => { q.exact = false; renderQuickTrim(); } },
+    { label: 'Frame-exact start', hint: 're-encodes, visually lossless', on: !!q.exact, run: () => { q.exact = true; renderQuickTrim(); } },
+  ]);
 });
 $('#w-trim-cancel').addEventListener('click', () => endQuickTrim(false));
 $('#w-trim-save').addEventListener('click', quickSave);
@@ -2347,7 +2393,8 @@ track.addEventListener('pointermove', (e) => {
   if (x < 0) return (pill.hidden = true);
   pill.hidden = false;
   pill.textContent = fmt(xToT(x));
-  pill.style.left = `${clamp(x, 28, strip.clientWidth - 28) + 8}px`; // the ruler has 8px padding
+  placeTip(pill, x, strip.clientWidth);
+  pill.style.left = `${parseFloat(pill.style.left) + 8}px`; // the ruler has 8px padding
 });
 track.addEventListener('pointerleave', () => ($('#tl-hover').hidden = true));
 

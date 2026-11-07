@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   parseProbe, planExport, buildExportArgs, pickEncoder, snapToKeyframe, atempoChain,
-  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, parseDuration, fixedSplitPoints,
+  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, parseDuration, fixedSplitPoints, canExactCopy,
   buildProxyArgs, ENCODER_CANDIDATES, parseTime, formatTime,
 } from '../src/ffargs.js';
 
@@ -31,6 +31,30 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
   check('fixedSplitPoints: no sliver at the end', fixedSplitPoints(0, 600.2, 300).length === 1);
   check('fixedSplitPoints: length >= video -> one part', fixedSplitPoints(0, 100, 100).length === 0);
 }
+
+// What players see: frames decoded (edit lists honoured) and the first one shown.
+const decodedFrames = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', f]).toString());
+const grabFrame = (f, at, name) => {
+  const p = path.join(out, `frame-${name}.png`);
+  execFileSync('ffmpeg', ['-v', 'error', '-y', ...(at == null ? [] : ['-ss', String(at)]), '-i', f, '-frames:v', '1', p]);
+  return p;
+};
+const psnrOf = (a, b) => {
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-i', a, '-i', b, '-lavfi', 'psnr', '-f', 'null', '-'], { encoding: 'utf8' });
+  const m = /average:([\d.inf]+)/.exec(r.stderr || '');
+  return m ? (m[1] === 'inf' ? 99 : Number(m[1])) : 0;
+};
+const firstFrameScores = (outF, srcName, want, kf) => {
+  const first = grabFrame(outF, null, `first-${path.basename(outF)}`);
+  const a = psnrOf(first, grabFrame(path.join(dir, srcName), want, `want-${want}`));
+  const b = psnrOf(first, grabFrame(path.join(dir, srcName), kf, `kf-${kf}`));
+  return `${a.toFixed(1)} dB vs the ${want}s frame, ${b.toFixed(1)} dB vs the ${kf}s keyframe`;
+};
+const firstFrameIs = (outF, srcName, want) => {
+  const first = grabFrame(outF, null, `first-${path.basename(outF)}`);
+  return psnrOf(first, grabFrame(path.join(dir, srcName), want, `want-${want}`)) > 40;
+};
 
 const probe = (f) => {
   const j = execFileSync('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', f]).toString();
@@ -71,7 +95,8 @@ const run = (name, file, edit, expect = {}) => {
   return { plan, res, outPath, info };
 };
 
-// 1. Lossless trim: start snaps to the 2s keyframe grid, packets identical to source.
+// 1. Lossless trim, exact start: packets identical to the source (copied from the 4.0 keyframe),
+//    and an MP4 edit list makes players start on the chosen 5.3 frame.
 {
   const kfs = keyframesNear(path.join(dir, 'src.mp4'), 5.3, 0);
   const kIn = snapToKeyframe(kfs, 5.3);
@@ -79,13 +104,17 @@ const run = (name, file, edit, expect = {}) => {
   const r = run('copy', 'src.mp4', { inT: 5.3, outT: 12, keyframeIn: kIn, sfx: [], origVolume: 1 });
   if (r) {
     check('copy: mode', r.plan.mode === 'copy');
-    check('copy: video duration ~8s', near(streamDur(r.res.raw, 'video'), 8, 0.05), String(streamDur(r.res.raw, 'video')));
-    check('copy: audio duration ~8s', near(streamDur(r.res.raw, 'audio'), 8, 0.1), String(streamDur(r.res.raw, 'audio')));
+    check('copy: exact start via edit list', r.plan.editList === true);
+    // (A lossless copy can end up to the B-frame depth late, here 2 frames: the last frames need one after them.)
+    check('copy: video ~6.7s (5.3 -> 12)', near(streamDur(r.res.raw, 'video'), 6.7, 0.1), String(streamDur(r.res.raw, 'video')));
+    check('copy: audio exactly 6.7s', near(streamDur(r.res.raw, 'audio'), 6.7, 0.1), String(streamDur(r.res.raw, 'audio')));
+    check('copy: plays the chosen frames (402 = 6.7s @60, end within 3 frames)', decodedFrames(r.outPath) - 402 >= 0 && decodedFrames(r.outPath) - 402 <= 3, String(decodedFrames(r.outPath)));
+    check('copy: first frame shown is the 5.3s frame, not the keyframe', firstFrameIs(r.outPath, 'src.mp4', 5.3), firstFrameScores(r.outPath, 'src.mp4', 5.3, 4.0));
     const srcH = packetHashes(path.join(dir, 'src.mp4'));
     const outH = packetHashes(r.outPath);
     const idx = srcH.indexOf(outH[0]);
     check('copy: video packets byte-identical to source', idx >= 0 && outH.every((h, i) => srcH[idx + i] === h), `${outH.length} packets at src index ${idx}`);
-    check('copy: starts exactly on keyframe (frame 240)', idx === 240, `idx ${idx}`);
+    check('copy: data starts on the keyframe before (frame 240), hidden lead-in', idx === 240, `idx ${idx}`);
   }
 }
 
@@ -160,16 +189,33 @@ const run = (name, file, edit, expect = {}) => {
   }
 }
 
-// 7. Frame-exact re-encode, no slow-mo.
+// 7. Frame-exact start: lossless on MP4 (edit list) even with the keyframe unknown...
 {
   const r = run('exact', 'src.mp4', { inT: 5.3, outT: 7.3, exact: true, sfx: [], origVolume: 1 });
   if (r) {
-    check('exact: mode', r.plan.mode === 'reencode');
-    check('exact: ~2.0s', near(streamDur(r.res.raw, 'video'), 2, 0.05), String(streamDur(r.res.raw, 'video')));
-    const frames = Number(execFileSync('ffprobe', ['-v', 'error', '-count_packets', '-select_streams', 'v:0',
-      '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', r.outPath]).toString());
-    check('exact: 120 frames @60fps', frames === 120, String(frames));
+    check('exact: still a lossless copy on MP4', r.plan.mode === 'copy' && r.plan.editList);
+    check('exact: ~2.0s (end within 3 frames)', near(streamDur(r.res.raw, 'video'), 2, 0.1), String(streamDur(r.res.raw, 'video')));
+    check('exact: 120 frames @60fps shown (end within 3 frames)', decodedFrames(r.outPath) - 120 >= 0 && decodedFrames(r.outPath) - 120 <= 3, String(decodedFrames(r.outPath)));
+    check('exact: first frame is the 5.3s frame', firstFrameIs(r.outPath, 'src.mp4', 5.3), firstFrameScores(r.outPath, 'src.mp4', 5.3, 4.0));
   }
+}
+// ...MKV with MP4-friendly codecs is saved as an exact, lossless .mp4...
+{
+  const { info } = probe(path.join(dir, 'sync.mkv'));
+  const r = canExactCopy(info) ? run('exact-mkv', 'sync.mkv', { inT: 3.5, outT: 7, keyframeIn: 2, sfx: [], origVolume: 1 }) : null;
+  check('exact mkv: codecs fit in MP4', canExactCopy(info), `${info.vcodec} / ${info.audioCodecs}`);
+  if (r) {
+    check('exact mkv: lossless copy into .mp4 with an exact start', r.plan.mode === 'copy' && r.plan.editList && r.plan.ext === 'mp4');
+    check('exact mkv: 3.5s long (end within 6 frames)', streamDur(r.res.raw, 'video') >= 3.49 && streamDur(r.res.raw, 'video') <= 3.6, String(streamDur(r.res.raw, 'video')));
+  }
+}
+// ...and a file that can't go into an MP4 (PCM audio in MKV) re-encodes for an exact start.
+{
+  const src = { ext: 'mkv', vcodec: 'h264', audioCodecs: ['pcm_s16le'], audioCount: 1, hasVideo: true, fps: 60 };
+  const p = planExport(src, { inT: 5.3, outT: 7.3, keyframeIn: 4, exact: true, sfx: [], origVolume: 1 });
+  const q = planExport(src, { inT: 6, outT: 7.3, keyframeIn: 6, exact: true, sfx: [], origVolume: 1 });
+  check('exact pcm-mkv: re-encodes for an exact start', p.mode === 'reencode' && p.reasons.includes('frame-exact start'));
+  check('exact pcm-mkv: no re-encode when the start is already a keyframe', q.mode === 'copy');
 }
 
 // 8. Whole clip slowed to 0.1x (atempo chaining).
@@ -218,12 +264,14 @@ for (const ext of ['mp4', 'mkv']) {
     ['freeze', { inT: 3.5, outT: 8, freezes: [{ at: 4.5, hold: 2 }], sfx: [], origVolume: 1 }, 1.5 + 2],
     ['freeze-slow-sfx', { inT: 3.5, outT: 8, freezes: [{ at: 4.2, hold: 1 }], slow: { enabled: true, start: 4, end: 6, speed: 0.5 }, sfx: [{ path: path.join(dir, 'boom.wav'), at: 5, volume: 1 }], origVolume: 0 }, 0.5 + 1 / 0.5 + 1],
   ];
-  for (const [name, edit, expected] of cases) {
+  for (let [name, edit, expected] of cases) {
     const r = run(`sync-${ext}-${name}`, `sync.${ext}`, edit);
     if (!r) continue;
     const t = syncTimes(r.outPath);
     // Video may start up to ~2 frames late in MP4 (B-frame delay, players start there);
     // what matters is that picture and sound stay together: within one 60fps frame.
+    // Lossless copies now start on the exact frame (edit list), so the flash is at 5.0 - 3.5.
+    if (r.plan.editList) expected = 5 - edit.inT;
     const ok = t.flash !== null && t.beep !== null && near(t.flash, expected, 0.04) && Math.abs(t.beep - t.flash) <= 0.017;
     check(`sync ${ext} ${name}: flash at ${expected.toFixed(3)}s, beep within 1 frame`, ok, `flash=${t.flash} beep=${t.beep} offset=${t.flash !== null && t.beep !== null ? ((t.beep - t.flash) * 1000).toFixed(1) + 'ms' : '?'}`);
   }
