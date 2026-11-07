@@ -151,9 +151,9 @@ body.empty #stage { background: var(--canvas); }
 
 /* ---------- Home: recent videos + a folder of videos ---------- */
 .home { min-height: 100%; max-width: 1240px; margin: 0 auto; padding: 28px 28px 32px; display: flex; flex-direction: column; gap: 28px; }
-/* The release's empty screen, centered in the window; the video lists start just below
-   (their top peeks in, so it's clear there's more to scroll to) */
-.home-hero { min-height: calc(100vh - 170px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+/* The release's empty screen in the upper part of the window, leaving room below for the
+   Recent heading and a full row of videos */
+.home-hero { min-height: max(300px, calc(100vh - 360px)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
 .home:not(:has(section:not([hidden]))) .home-hero { min-height: calc(100vh - 60px); } /* nothing below: true center */
 .home-hero-actions { display: flex; gap: 8px; }
 .home-hero-actions .btn { height: 32px; }
@@ -162,7 +162,7 @@ body.empty #stage { background: var(--canvas); }
 #home-folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-none { color: var(--text-3); padding: 18px 0; }
 .vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 16px 14px; }
-.vcard { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: none; background: none; text-align: left; cursor: pointer; border-radius: 8px; outline: none; }
+.vcard { position: relative; display: block; min-width: 0; padding: 0; border: none; background: none; text-align: left; cursor: pointer; border-radius: 8px; outline: none; }
 .vthumb { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: var(--surface); display: grid; place-items: center; color: var(--text-3); }
 .vthumb > svg { width: 22px; height: 22px; opacity: 0.6; }
 .vthumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.2s; }
@@ -170,10 +170,13 @@ body.empty #stage { background: var(--canvas); }
 .vthumb::after { content: ""; position: absolute; inset: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); pointer-events: none; transition: box-shadow 0.12s; }
 .vcard:hover .vthumb::after { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35); }
 .vcard:focus-visible .vthumb::after { box-shadow: inset 0 0 0 2px var(--blue); }
-.vdur { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: 4px; background: rgba(0, 0, 0, 0.72); color: #fff; font: 500 11px/16px var(--mono); font-variant-numeric: tabular-nums; }
+/* Bottom strip over the thumbnail: black fading up into the picture, with the name, date · size and length */
+.vinfo { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; gap: 10px; padding: 26px 9px 7px; background: linear-gradient(to top, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.6) 55%, transparent); pointer-events: none; }
+.vtext { flex: 1; min-width: 0; }
+.vdur { flex-shrink: 0; color: #fff; font: 500 11px/16px var(--mono); font-variant-numeric: tabular-nums; }
 .vdur:empty { display: none; }
-.vname { font-weight: 500; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
-.vmeta { color: var(--text-3); font-size: 11px; margin-top: -4px; padding: 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vname { color: #fff; font-weight: 500; font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vmeta { color: rgba(255, 255, 255, 0.65); font-size: 11px; line-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vforget { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 6px; border: none; background: rgba(0, 0, 0, 0.6); color: #fff; display: grid; place-items: center; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
 .vforget svg { width: 14px; height: 14px; }
 .vcard:hover .vforget, .vforget:focus-visible { opacity: 1; }

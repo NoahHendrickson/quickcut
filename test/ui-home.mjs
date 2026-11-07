@@ -119,8 +119,9 @@ const box = (sel) => page.locator(sel).boundingBox();
 const H = 840;
 const [hero, title, openBtn, recentBox] = [await box('.home-hero'), await box('.empty-title'), await box('#btn-open-empty'), await box('#home-recent')];
 check(Math.abs(title.x + title.width / 2 - 660) < 2, 'hero centered horizontally');
-check(title.y > H * 0.3 && title.y < H * 0.55, `hero near the middle of the window (title at ${Math.round(title.y)}px of ${H})`);
-check(recentBox.y > hero.y + hero.height && recentBox.y < H - 60, `recent videos below it, peeking in at the bottom (${Math.round(recentBox.y)}px)`);
+check(title.y > H * 0.2 && title.y < H * 0.45, `hero in the upper part of the window (title at ${Math.round(title.y)}px of ${H})`);
+const firstCard = await box('#recent-grid .vcard >> nth=0');
+check(recentBox.y > hero.y + hero.height && firstCard.y + firstCard.height <= H, `recent videos below it, first row fully in view (ends at ${Math.round(firstCard.y + firstCard.height)}px of ${H})`);
 if (!process.env.QC_NO_UPDATE) {
   const upd = await box('#home-update');
   check(await page.isVisible('#home-update') && await page.textContent('#home-update') === 'Update to 1.3.0', 'update button shown');
@@ -130,6 +131,11 @@ if (!process.env.QC_NO_UPDATE) {
   check(await page.isHidden('#home-update'), 'no update: no update button');
 }
 check(thumbCalls === 3, `one thumbnail per file (${thumbCalls})`);
+check(await page.$$eval('#folder-grid .vcard', (cs) => cs.every((c) => ['.vname', '.vmeta', '.vdur'].every((q) => c.querySelector(`.vthumb .vinfo ${q}`)))), 'name, date · size and length sit on the thumbnail');
+await page.$eval('#empty-state', (e) => e.scrollTo(0, e.scrollHeight));
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${SHOTS}/99-home-cards.png` });
+await page.$eval('#empty-state', (e) => e.scrollTo(0, 0));
 await page.waitForTimeout(400);
 await page.screenshot({ path: `${SHOTS}/${process.env.QC_NO_UPDATE ? '96-home-no-update' : '94-home'}.png` });
 

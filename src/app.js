@@ -2486,7 +2486,8 @@ function videoCard(v, { forget } = {}) {
   el.className = 'vcard';
   el.tabIndex = 0;
   el.title = v.path;
-  el.innerHTML = `<div class="vthumb">${icon('film')}<img alt="" draggable="false"><span class="vdur"></span></div><div class="vname"></div><div class="vmeta"></div>`;
+  // Name, date · size and length sit on a dark strip along the bottom of the thumbnail.
+  el.innerHTML = `<div class="vthumb">${icon('film')}<img alt="" draggable="false"><div class="vinfo"><div class="vtext"><div class="vname"></div><div class="vmeta"></div></div><span class="vdur"></span></div></div>`;
   el.querySelector('.vname').textContent = v.name;
   el.querySelector('.vmeta').textContent = `${ago(v.modified)} · ${fmtSize(v.size)}`;
   if (forget) {
