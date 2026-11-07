@@ -1545,17 +1545,53 @@ addEventListener('resize', async () => {
   if (!isFullscreen() || !appWindow.isFullscreen) return;
   if (!(await appWindow.isFullscreen())) setFullscreen(false);
 });
+// Watch controls behave like an auto-hiding Dock: they slide away after a moment without
+// mouse movement (playing or paused) and come straight back when the mouse moves.
+const IDLE_MS = 900;
 let idleTimer = null;
+/** Is the bar in use right now? Then it stays. */
+function controlsInUse() {
+  const bar = $('#watchbar');
+  const typing = document.activeElement && bar.contains(document.activeElement) && document.activeElement.matches('input:not([type="range"])');
+  return S.mode !== 'watch' || !S.path || !!S.quick || pointerOverBar() || !!popMenu
+    || !!document.querySelector('dialog[open]') || scrub.classList.contains('drag') || quickDragging || typing;
+}
+function hideControls() {
+  clearTimeout(idleTimer);
+  if (controlsInUse()) return (idleTimer = setTimeout(hideControls, IDLE_MS));
+  document.body.classList.add('idle');
+}
 function wakeControls() {
   document.body.classList.remove('idle');
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    const overBar = $('#watchbar').matches(':hover');
-    if (isFullscreen() && S.mode === 'watch' && !video.paused && !overBar && !S.quick) document.body.classList.add('idle');
-  }, 2500);
+  idleTimer = setTimeout(hideControls, IDLE_MS);
 }
-for (const ev of ['pointermove', 'pointerdown', 'keydown']) document.addEventListener(ev, wakeControls, { passive: true });
-video.addEventListener('play', wakeControls);
+// Only real movement counts: the webview also sends "moves" with the cursor standing still
+// (e.g. when the bar itself fades under it), which would make it flicker back.
+let lastPointer = '';
+let pointerAt = null; // last cursor position in the window (null = outside it)
+/** Cursor over the bar? (Not :hover: that isn't updated when the bar reappears under a still cursor.) */
+function pointerOverBar() {
+  if (!pointerAt) return false;
+  const r = $('#watchbar').getBoundingClientRect();
+  return pointerAt.x >= r.left && pointerAt.x <= r.right && pointerAt.y >= r.top - 6 && pointerAt.y <= r.bottom;
+}
+document.addEventListener('pointermove', (e) => {
+  pointerAt = { x: e.clientX, y: e.clientY };
+  const at = `${e.screenX},${e.screenY}`;
+  if (at === lastPointer) return;
+  lastPointer = at;
+  wakeControls();
+}, { passive: true });
+for (const ev of ['pointerdown', 'keydown', 'wheel']) document.addEventListener(ev, wakeControls, { passive: true });
+// Mouse left the window: hide right away, like the Dock (unless it's busy, e.g. mid-drag).
+document.addEventListener('mouseout', (e) => {
+  if (e.relatedTarget) return;
+  lastPointer = '';
+  pointerAt = null;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(hideControls, 60);
+});
 video.addEventListener('pause', wakeControls);
 
 // Seek bar + readouts
@@ -1708,43 +1744,23 @@ const nudgeWatchRate = (dir) => {
   const next = dir > 0 ? WATCH_SPEEDS.find((v) => v > r + 1e-6) : [...WATCH_SPEEDS].reverse().find((v) => v < r - 1e-6);
   if (next) setWatchRate(next);
 };
-const speedMenu = $('#w-speed-menu');
-function closeSpeedMenu() {
-  // Hand the keyboard back to the player's shortcuts.
-  if (speedMenu.contains(document.activeElement)) document.activeElement.blur();
-  speedMenu.hidden = true;
-}
-function toggleSpeedMenu() {
-  if (!speedMenu.hidden) return closeSpeedMenu();
+// The speed menu is the shared pop-up (on the page, not inside the frosted bar: an element
+// that blurs what's behind it can't contain another one that does).
+function openSpeedMenu() {
   const r = S.watchRate;
   const custom = !MENU_SPEEDS.some((v) => Math.abs(v - r) < 1e-6);
-  speedMenu.innerHTML = MENU_SPEEDS.map((v) => {
-    const on = Math.abs(v - r) < 1e-6;
-    return `<button type="button" data-v="${v}" class="${on ? 'on' : ''}"><span>${fmtRate(v)}×</span>${on ? icon('check') : v === 1 ? '<span class="k">Normal</span>' : ''}</button>`;
-  }).join('') + `<div class="sep"></div><label>Custom <input id="w-speed-custom" inputmode="decimal" spellcheck="false" autocomplete="off" placeholder="0.1–16" value="${custom ? fmtSpeed(r) : ''}" /></label>`;
-  speedMenu.hidden = false;
-  const input = $('#w-speed-custom');
-  input.addEventListener('input', () => {
-    const v = parseSpeed(input.value);
-    input.classList.toggle('invalid', input.value.trim() !== '' && !(v >= 0.1 && v <= 16));
-  });
-  input.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-    if (e.key === 'Escape') return closeSpeedMenu();
-    if (e.key !== 'Enter') return;
-    const v = parseSpeed(input.value);
-    if (v >= 0.1 && v <= 16) { setWatchRate(v); closeSpeedMenu(); } else input.classList.add('invalid');
-  });
+  openMenu($('#w-speed'), [
+    ...MENU_SPEEDS.map((v) => {
+      const on = Math.abs(v - r) < 1e-6;
+      return { label: `${fmtRate(v)}×`, on, hint: v === 1 ? 'Normal' : '', run: () => setWatchRate(v) };
+    }),
+    '-',
+    { input: { label: 'Custom', value: custom ? fmtSpeed(r) : '', placeholder: '0.1–16',
+      apply: (t) => { const v = parseSpeed(t); if (!(v >= 0.1 && v <= 16)) return false; setWatchRate(v); } } },
+  ]);
 }
-speedMenu.addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-v]');
-  if (!b) return;
-  setWatchRate(Number(b.dataset.v));
-  closeSpeedMenu();
-});
-$('#w-speed-btn').addEventListener('click', toggleSpeedMenu);
-$('#w-speed-val').addEventListener('click', toggleSpeedMenu);
-document.addEventListener('pointerdown', (e) => { if (!speedMenu.hidden && !e.target.closest('#w-speed')) closeSpeedMenu(); });
+$('#w-speed-btn').addEventListener('click', openSpeedMenu);
+$('#w-speed-val').addEventListener('click', openSpeedMenu);
 
 // Loop: a yellow section on the seek bar. Starts at the playhead; drag either end to adjust.
 const minLoop = () => Math.max(2 / fps(), 0.1);
@@ -2231,7 +2247,6 @@ splitDlg.addEventListener('cancel', (e) => { if (S.busy === 'split') e.preventDe
 $('#split-x').addEventListener('click', (e) => { if (S.busy === 'split') e.preventDefault(); });
 
 function watchKey(e, k, handled) {
-  if (!speedMenu.hidden && k === 'Escape') { handled(); return closeSpeedMenu(); }
   if (S.quick) {
     if (k === 'Enter') { handled(); return S.quick.saved ? endQuickTrim(true) : quickSave(); }
     if (k === 'Escape') { handled(); return S.quick.saved ? endQuickTrim(true) : endQuickTrim(false); }
@@ -2443,7 +2458,7 @@ function openMenu(anchor, items) {
   if (popMenu && popMenu.anchor === anchor) return closeMenu();
   closeMenu();
   const el = document.createElement('div');
-  el.className = 'menu pop';
+  el.className = anchor.closest('#watchbar') ? 'menu pop frost' : 'menu pop';
   for (const it of items) {
     if (it === '-') { el.insertAdjacentHTML('beforeend', '<div class="sep"></div>'); continue; }
     if (it.title) {

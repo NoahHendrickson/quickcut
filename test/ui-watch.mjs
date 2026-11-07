@@ -209,14 +209,14 @@ await log('held next 1s');
 // Speed: pick 0.25 from the menu, then ] twice, then R; also a custom value
 await page.click('#w-speed-val'); await page.waitForTimeout(150);
 await page.screenshot({ path: `${SHOTS}/69-speed-menu.png` });
-await page.click('#w-speed-menu button[data-v="0.25"]');
+await page.evaluate(() => [...document.querySelectorAll('.menu.pop button')].find((b) => b.firstElementChild?.textContent === '0.25×').click());
 await page.keyboard.press('Space'); await page.waitForTimeout(500);
 await log('playing at 0.25');
 await page.keyboard.press('Space');
 await page.keyboard.press(']'); await page.keyboard.press(']');
 await log('] ]');
 await page.keyboard.press('r');
-await page.click('#w-speed-btn'); await page.fill('#w-speed-custom', '0.4'); await page.press('#w-speed-custom', 'Enter');
+await page.click('#w-speed-btn'); await page.fill('.menu.pop input', '0.4'); await page.press('.menu.pop input', 'Enter');
 await log('custom 0.4');
 await page.keyboard.press('r');
 // Volume: M mutes, down arrow lowers

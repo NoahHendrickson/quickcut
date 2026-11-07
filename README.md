@@ -8,7 +8,7 @@ A small, fast Windows video editor for clips: trim, split, speed (slow-mo or spe
 
 ## Two modes
 
-The file name and its details are in the window's title bar, so the video fills the window, with one bar of controls underneath: play, frame steps, ±5 / ±10 s, volume, the seek bar, **Loop** (turns yellow, then drag its two yellow ends on the seek bar), playback speed, **Edit**, **Trim** and full screen (or press F, or double-click the video).
+The file name and its details are in the window's title bar, so the video fills the window. One frosted bar of controls floats over it and slides away after a moment without mouse movement (like an auto-hiding Dock): play, frame steps, ±5 / ±10 s, volume, the seek bar, **Loop** (turns yellow, then drag its two yellow ends on the seek bar), playback speed, **Edit**, **Trim** and full screen (or press F, or double-click the video).
 
 - **Watch**: a clean player for investigating clips. Step frame by frame (hold ← → to keep going), play at any speed from 0.1× to 16×, loop an A–B section, and scroll on the video to zoom into the picture. **Trim** right from the player: drag the two handles on the seek bar, play the selection to check it, and save. It's lossless by default, with an optional exact start.
 - **Split** (or press P): turn one video into several. Choose a number of equal parts, or a length per part (`2h`, `30m`, `1:30:00`; the last part gets what's left). The dialog lists every part, then saves them as new videos next to the original, losslessly.
