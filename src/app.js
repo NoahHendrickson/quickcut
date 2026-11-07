@@ -130,6 +130,7 @@ async function openVideo(path) {
   if (token !== S.openToken) return;
   if (!info.hasVideo) return toast('That file has no video in it');
   info.ext = extOf(path);
+  rememberRecent(path);
 
   stopAllSfx();
   Object.assign(S, {
@@ -613,7 +614,9 @@ function applyPreviewVolume() {
   const quiet = settings.muted || settings.previewVolume < 0.001;
   $('#w-mute use').setAttribute('href', quiet ? '#i-mute' : '#i-volume');
   $('#w-mute').title = quiet ? 'Unmute (M)' : 'Mute (M) · ↑ ↓ change the volume';
-  if (document.activeElement !== $('#w-volume')) $('#w-volume').value = settings.muted ? 0 : settings.previewVolume;
+  const slider = $('#w-volume');
+  if (document.activeElement !== slider) slider.value = settings.muted ? 0 : settings.previewVolume;
+  slider.style.setProperty('--v', slider.value); // the track fills blue up to the knob
 }
 function setVolume(v) {
   settings.previewVolume = Math.round(clamp(v, 0, 1) * 100) / 100;
@@ -2339,7 +2342,7 @@ async function ensureEngine() {
   unlisten();
   overlay(null);
   $('#overlay-retry').hidden = true;
-  if (!S.path) $('#empty-state').hidden = false;
+  if (!S.path) { $('#empty-state').hidden = false; renderHome(); }
 }
 const engineReady = ensureEngine();
 
@@ -2357,11 +2360,13 @@ async function checkForUpdate(manual = false) {
     return;
   }
   const btn = $('#btn-update');
-  btn.hidden = !pendingUpdate;
+  btn.hidden = $('#home-update').hidden = !pendingUpdate;
   if (pendingUpdate) {
     btn.textContent = `Update to ${pendingUpdate.version}`;
     btn.title = pendingUpdate.notes || 'A new version of QuickCut is available';
     status.textContent = `Version ${pendingUpdate.version} is available`;
+    $('#home-update').textContent = btn.textContent;
+    $('#home-update').title = btn.title;
   } else if (manual) {
     status.textContent = "You're up to date";
   }
@@ -2369,26 +2374,29 @@ async function checkForUpdate(manual = false) {
 async function installUpdate() {
   if (!pendingUpdate) return;
   if (S.busy === 'export') return toast('Finish or cancel the export first');
-  const btn = $('#btn-update');
-  btn.disabled = true;
-  btn.textContent = 'Downloading update…';
+  const btns = [$('#btn-update'), $('#home-update')];
+  const label = (t) => btns.forEach((b) => (b.textContent = t));
+  btns.forEach((b) => (b.disabled = true));
+  label('Downloading update…');
   const unlisten = await T.event.listen('update-progress', (e) => {
     const { downloaded, total } = e.payload;
-    btn.textContent = total ? `Updating… ${Math.round((downloaded / total) * 100)}%` : 'Updating…';
+    label(total ? `Updating… ${Math.round((downloaded / total) * 100)}%` : 'Updating…');
   });
   try {
     await invoke('install_update'); // the app restarts into the new version
   } catch (e) {
     unlisten();
-    btn.disabled = false;
-    btn.textContent = `Update to ${pendingUpdate.version}`;
+    btns.forEach((b) => (b.disabled = false));
+    label(`Update to ${pendingUpdate.version}`);
     toast(`Update failed: ${String(e).slice(0, 160)}`, 6000);
   }
 }
 $('#btn-update').addEventListener('click', installUpdate);
+$('#home-update').addEventListener('click', installUpdate);
 $('#btn-check-update').addEventListener('click', () => checkForUpdate(true));
 invoke('app_version').then((v) => ($('#app-version').textContent = `v${v}`));
-engineReady.then(() => setTimeout(() => checkForUpdate(false), 3000));
+// Check right away so the home screen can offer the update before a video is opened.
+engineReady.then(() => checkForUpdate(false));
 
 S.encodersReady = engineReady.then(() => invoke('detect_encoders', { candidates: ENCODER_CANDIDATES }))
   .then((list) => {
@@ -2416,6 +2424,132 @@ async function pickAndOpen() {
 }
 $('#btn-open').addEventListener('click', pickAndOpen);
 $('#btn-open-empty').addEventListener('click', pickAndOpen);
+
+// ---------------------------------------------------------------------------
+// Home screen (no video open): recent videos + the videos in a folder
+// ---------------------------------------------------------------------------
+let recent = JSON.parse(localStorage.getItem('qc.recent') || '[]'); // paths, newest first
+const saveRecent = () => localStorage.setItem('qc.recent', JSON.stringify(recent));
+function rememberRecent(path) {
+  recent = [path, ...recent.filter((p) => p !== path)].slice(0, 30);
+  saveRecent();
+}
+const videosDirP = invoke('videos_dir').catch(() => null);
+const homeDir = async () => settings.homeDir || settings.lastDir || (await videosDirP);
+
+function ago(ms) {
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return 'Just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  const d = new Date(ms);
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(ms).setHours(0, 0, 0, 0)) / 864e5);
+  if (days === 0) return `${Math.floor(s / 3600)} hr ago`;
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+function fmtSize(b) {
+  if (b >= 1e9) return `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} GB`;
+  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
+  return `${Math.max(1, Math.round(b / 1e3))} KB`;
+}
+
+// Poster frames: a few at a time (each one is an ffmpeg run), cached per file version.
+const thumbs = new Map();
+const thumbQueue = [];
+let thumbsRunning = 0;
+function thumbFor(v) {
+  const key = `${v.path}|${v.size}|${v.modified}`;
+  if (!thumbs.has(key)) {
+    thumbs.set(key, new Promise((resolve) => {
+      const run = async () => {
+        thumbsRunning++;
+        try {
+          await engineReady;
+          const [file, len] = await invoke('thumbnail', { path: v.path, height: 270 });
+          resolve({ url: await invoke('media_url', { path: file }), len });
+        } catch {
+          resolve(null);
+        } finally {
+          thumbsRunning--;
+          thumbQueue.shift()?.();
+        }
+      };
+      if (thumbsRunning < 3) run(); else thumbQueue.push(run);
+    }));
+  }
+  return thumbs.get(key);
+}
+
+function videoCard(v, { forget } = {}) {
+  const el = document.createElement('div');
+  el.className = 'vcard';
+  el.tabIndex = 0;
+  el.title = v.path;
+  el.innerHTML = `<div class="vthumb">${icon('film')}<img alt="" draggable="false"><span class="vdur"></span></div><div class="vname"></div><div class="vmeta"></div>`;
+  el.querySelector('.vname').textContent = v.name;
+  el.querySelector('.vmeta').textContent = `${ago(v.modified)} · ${fmtSize(v.size)}`;
+  if (forget) {
+    const b = document.createElement('button');
+    b.className = 'vforget';
+    b.title = 'Remove from Recent';
+    b.innerHTML = icon('x');
+    b.addEventListener('click', (e) => { e.stopPropagation(); forget(); });
+    el.append(b);
+  }
+  el.addEventListener('click', () => openVideo(v.path));
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); openVideo(v.path); }
+  });
+  thumbFor(v).then((t) => {
+    if (!t) return;
+    const img = el.querySelector('img');
+    img.onload = () => img.classList.add('ready');
+    img.src = t.url;
+    if (t.len > 0) el.querySelector('.vdur').textContent = formatTime(t.len, false);
+  });
+  return el;
+}
+
+/** Replace a grid's cards, unless the list is unchanged (keeps refreshes flicker-free). */
+function fillGrid(grid, list, opts) {
+  const sig = list.map((v) => `${v.path}|${v.size}|${v.modified}`).join('\n');
+  if (grid.dataset.sig === sig) return;
+  grid.dataset.sig = sig;
+  grid.replaceChildren(...list.map((v) => videoCard(v, opts?.(v))));
+}
+
+let homeSeq = 0;
+async function renderHome() {
+  if (S.path) return;
+  const seq = ++homeSeq;
+  let dir = null, rec = [], inDir = [];
+  try {
+    dir = await homeDir();
+    [rec, inDir] = await Promise.all([
+      invoke('stat_videos', { paths: recent }),
+      dir ? invoke('folder_videos', { dir, limit: 60 }) : [],
+    ]);
+  } catch { /* nothing to show */ }
+  if (seq !== homeSeq || S.path) return;
+  rec = rec.slice(0, 10);
+  fillGrid($('#recent-grid'), rec, (v) => ({
+    forget: () => { recent = recent.filter((p) => p !== v.path); saveRecent(); renderHome(); },
+  }));
+  fillGrid($('#folder-grid'), inDir);
+  $('#home-recent').hidden = !rec.length;
+  $('#home-folder').hidden = !dir;
+  $('#folder-none').hidden = !!inDir.length;
+  $('#home-folder-name').textContent = dir ? basename(dir.replace(/[\\/]+$/, '')) || dir : '';
+  $('#home-folder-change').title = dir ? `${dir}\nChoose which folder to show here` : '';
+}
+$('#home-folder-change').addEventListener('click', async () => {
+  const d = await invoke('pick_folder', { title: 'Show videos from this folder' });
+  if (d) { settings.homeDir = d; saveSettings(); renderHome(); }
+});
+// New recordings show up when you come back to the window.
+window.addEventListener('focus', renderHome);
+renderHome();
 $('#btn-help').addEventListener('click', () => $('#help').showModal());
 $('#e-help').addEventListener('click', () => $('#help').showModal());
 $('#btn-play').addEventListener('click', togglePlay);

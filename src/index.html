@@ -62,11 +62,34 @@
         <video id="video" preload="auto" playsinline></video>
         <div id="zoom-box" hidden title="Drag to choose what to zoom into"><i class="anchor"></i><span id="zoom-box-label"></span></div>
       </div>
+      <!-- Home: shown until a video is open -->
       <div id="empty-state">
-        <div class="empty-icon"><svg><use href="#i-film"/></svg></div>
-        <div class="empty-title">Drop a video to start</div>
-        <div class="empty-sub">Trims keep your original quality, bit for bit.</div>
-        <button class="btn primary" id="btn-open-empty">Open video</button>
+        <div class="home">
+          <!-- Same as the release's empty screen, centered; recent videos sit below it -->
+          <div class="home-hero">
+            <div class="empty-icon"><svg><use href="#i-film"/></svg></div>
+            <div class="empty-title">Drop a video to start</div>
+            <div class="empty-sub">Trims keep your original quality, bit for bit.</div>
+            <div class="home-hero-actions">
+              <button class="btn primary" id="btn-open-empty">Open video</button>
+              <button class="btn update" id="home-update" hidden></button>
+            </div>
+          </div>
+          <section id="home-recent" hidden>
+            <div class="home-title">Recent</div>
+            <div class="vgrid" id="recent-grid"></div>
+          </section>
+          <section id="home-folder" hidden>
+            <div class="home-title">
+              <span>Videos in</span>
+              <button class="folder-line" id="home-folder-change" title="Choose which folder to show here">
+                <svg><use href="#i-folder"/></svg><span id="home-folder-name"></span><span class="link">Change</span>
+              </button>
+            </div>
+            <div class="vgrid" id="folder-grid"></div>
+            <div class="home-none" id="folder-none" hidden>No videos in this folder.</div>
+          </section>
+        </div>
       </div>
       <div id="overlay" hidden>
         <div class="overlay-card">

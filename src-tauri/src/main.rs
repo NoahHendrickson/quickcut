@@ -428,6 +428,108 @@ fn sibling_videos(path: String) -> Vec<String> {
     v
 }
 
+// ---------------------------------------------------------------------------
+// Home screen: recent videos and a folder of videos, with thumbnails
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct VideoFile {
+    path: String,
+    name: String,
+    size: u64,
+    /// Last modified, in milliseconds since 1970.
+    modified: f64,
+}
+
+fn video_file(p: &Path) -> Option<VideoFile> {
+    let m = std::fs::metadata(p).ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    let modified = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+    Some(VideoFile {
+        path: p.to_string_lossy().to_string(),
+        name: p.file_name()?.to_string_lossy().to_string(),
+        size: m.len(),
+        modified,
+    })
+}
+
+/// Videos in `dir`, newest first (at most `limit`). Skips QuickCut's own
+/// half-written temp files.
+#[tauri::command]
+fn folder_videos(dir: String, limit: usize) -> Vec<VideoFile> {
+    let Ok(rd) = std::fs::read_dir(&dir) else { return vec![] };
+    let mut v: Vec<VideoFile> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| has_ext(p, VIDEO_EXTS) && !p.to_string_lossy().contains(".quickcut-tmp"))
+        .filter_map(|p| video_file(&p))
+        .collect();
+    v.sort_by(|a, b| b.modified.total_cmp(&a.modified));
+    v.truncate(limit);
+    v
+}
+
+/// The given files that still exist, in the same order.
+#[tauri::command]
+fn stat_videos(paths: Vec<String>) -> Vec<VideoFile> {
+    paths.iter().filter_map(|p| video_file(Path::new(p))).collect()
+}
+
+/// The user's Videos folder (default for the home screen).
+#[tauri::command]
+fn videos_dir(app: AppHandle) -> Option<String> {
+    app.path().video_dir().ok().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string())
+}
+
+/// A poster frame for the home screen (`height` px tall JPEG) and the video's
+/// length in seconds. Cached by path + size + modified time.
+#[tauri::command]
+async fn thumbnail(path: String, height: u32) -> CmdResult<(String, f64)> {
+    blocking(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        let mut h = DefaultHasher::new();
+        (&path, meta.len(), height).hash(&mut h);
+        if let Ok(m) = meta.modified() {
+            m.hash(&mut h);
+        }
+        let dir = std::env::temp_dir().join("QuickCut-previews");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let key = format!("{:016x}", h.finish());
+        let out = dir.join(format!("thumb-{key}.jpg"));
+        let len_file = dir.join(format!("thumb-{key}.txt"));
+        if out.is_file() {
+            let len = std::fs::read_to_string(&len_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0.0);
+            return Ok((out.to_string_lossy().to_string(), len));
+        }
+
+        let mut c = tool("ffprobe");
+        c.args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(&path);
+        let len: f64 = run_capture(c).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0.0);
+
+        // A frame a little way in: the very first one is often black or a fade.
+        let at = if len > 0.0 { (len * 0.1).min(10.0) } else { 0.0 };
+        let vf = format!("scale=-2:{height}:flags=bilinear,setsar=1,scale=out_range=full,format=yuvj420p");
+        for t in [at, 0.0] {
+            let mut c = tool("ffmpeg");
+            c.args(["-v", "error", "-y", "-ss", &format!("{t:.3}"), "-noaccurate_seek", "-i"]).arg(&path);
+            c.args(["-an", "-vf", &vf, "-frames:v", "1", "-update", "1", "-q:v", "4"]).arg(&out);
+            if run_capture(c).is_ok() && out.is_file() {
+                let _ = std::fs::write(&len_file, len.to_string());
+                return Ok((out.to_string_lossy().to_string(), len));
+            }
+        }
+        Err("no thumbnail".into())
+    })
+    .await
+}
+
 /// Strip characters Windows doesn't allow in file names.
 fn clean_name(name: &str) -> String {
     let cleaned: String = name
@@ -591,10 +693,10 @@ async fn pick_sounds(app: AppHandle) -> Vec<String> {
 }
 
 #[tauri::command]
-async fn pick_folder(app: AppHandle) -> Option<String> {
+async fn pick_folder(app: AppHandle, title: Option<String>) -> Option<String> {
     app.dialog()
         .file()
-        .set_title("Choose export folder")
+        .set_title(title.unwrap_or_else(|| "Choose export folder".into()))
         .blocking_pick_folder()
         .and_then(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().to_string())
@@ -769,6 +871,10 @@ fn main() {
             waveform,
             remove_file,
             sibling_videos,
+            folder_videos,
+            stat_videos,
+            videos_dir,
+            thumbnail,
             output_path,
             temp_output_path,
             replace_original,

@@ -43,6 +43,7 @@ Tauri 2 (Rust) + plain HTML/JS UI, driving ffmpeg.
 npm install
 npm test                      # ffmpeg end-to-end tests (incl. A/V sync, lossless splits, zoom) + Rust tests
 node test/ui-flow.mjs src     # UI flows in headless Chrome (needs playwright-core)
+node test/ui-home.mjs src     # home screen: recent videos, folder grid, update button
 ```
 
 ### Building on macOS for Windows
