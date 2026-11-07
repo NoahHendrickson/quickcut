@@ -132,6 +132,7 @@
         <button class="pb-btn primary" id="w-trim" title="Quickly trim this clip (T)"><svg><use href="#i-trim"/></svg>Trim</button>
       </div>
       <div class="pb-group w-normal pb-tools">
+        <span class="proxy-chip" id="w-proxy" hidden title="This video's format can't be played directly on this PC, so you're watching a 1080p preview copy. Exports always use the original at full quality. (Installing the HEVC Video Extensions from the Microsoft Store lets Windows play HEVC directly.)">Preview copy</span>
         <button class="btn update" id="btn-update" hidden></button>
         <button class="pb-icon" id="btn-prev" title="Previous video in this folder (PgUp)" hidden><svg><use href="#i-chev-left"/></svg></button>
         <button class="pb-icon" id="btn-next" title="Next video in this folder (PgDn)" hidden><svg><use href="#i-chev-right"/></svg></button>
@@ -180,6 +181,7 @@
           </div>
         </div>
         <div class="ed-right">
+          <span class="proxy-chip" id="e-proxy" hidden title="This video's format can't be played directly on this PC, so you're watching a 1080p preview copy. Exports always use the original at full quality. (Installing the HEVC Video Extensions from the Microsoft Store lets Windows play HEVC directly.)">Preview copy</span>
           <button class="pb-icon" id="e-help" title="Keyboard shortcuts (?)"><svg><use href="#i-help"/></svg></button>
           <button class="btn primary" id="btn-export" disabled><svg><use href="#i-export"/></svg><span id="btn-export-label">Export</span></button>
         </div>

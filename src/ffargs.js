@@ -455,15 +455,19 @@ export function buildExportArgs(src, plan, opts) {
   return args;
 }
 
-/** Low-res, keyframe-dense preview copy for videos the webview can't play (e.g. some HEVC). */
+/**
+ * Preview copy for videos the webview can't decode (e.g. HEVC without Windows' HEVC
+ * extension): up to 1080p, high quality, same frame rate, keyframes every 15 frames
+ * so scrubbing stays quick. Only for watching: exports always use the original.
+ */
 export function buildProxyArgs(inputPath, outputPath) {
   return [
     '-hide_banner', '-y', '-nostdin', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1',
     '-hwaccel', 'auto', '-i', inputPath,
     '-map', '0:V:0', '-map', '0:a:0?',
-    '-vf', "scale=-2:'min(720,ih)',format=yuv420p",
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-g', '15',
-    '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
+    '-vf', "scale=-2:'min(1080,ih)':flags=lanczos,format=yuv420p",
+    '-c:v', 'libx264', '-preset', 'superfast', '-crf', '18', '-g', '15',
+    '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
     '-movflags', '+faststart',
     outputPath,
   ];

@@ -299,7 +299,8 @@ fn proxy_path(path: String) -> CmdResult<(String, bool)> {
     }
     let dir = std::env::temp_dir().join("QuickCut-previews");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let p = dir.join(format!("{:016x}.mp4", h.finish()));
+    // "-1080": copies from older versions (720p, lower quality) are never reused.
+    let p = dir.join(format!("{:016x}-1080.mp4", h.finish()));
     let exists = p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false);
     Ok((p.to_string_lossy().to_string(), exists))
 }

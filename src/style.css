@@ -847,3 +847,13 @@ table.keys td:first-child { width: 44%; white-space: nowrap; color: var(--text);
 .freeze-clip svg { width: 14px; height: 14px; pointer-events: none; }
 .freeze-clip span { pointer-events: none; }
 .freeze-clip.selected { box-shadow: inset 0 0 0 2px #fff; }
+
+/* Shown while watching a preview copy instead of the original */
+.proxy-chip { height: 24px; padding: 0 8px; margin-right: 4px; display: inline-flex; align-items: center; border-radius: 6px; background: rgba(245, 195, 59, 0.16); color: var(--yellow); font: 400 11px var(--mono); white-space: nowrap; cursor: help; }
+
+/* Quick trim: the trim bar gets the whole width on its own row, controls below.
+   Its width then never depends on the info text, so handles can't shift when that text changes
+   (e.g. the keyframe note appearing after you let go of the start handle). */
+body.quicktrim .pbar { flex-wrap: wrap; row-gap: 10px; }
+body.quicktrim .pb-seek { order: -1; flex: 1 0 100%; }
+body.quicktrim .w-quick { margin-left: auto; min-width: 0; }

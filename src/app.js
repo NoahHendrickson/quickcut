@@ -151,6 +151,7 @@ async function openVideo(path) {
   $('#btn-open').title = `${path}\nOpen another video (Ctrl+O)`;
 
   video.pause();
+  netRetries = 0;
   video.src = await invoke('media_url', { path });
   video.currentTime = 0;
   invoke('sibling_videos', { path }).then((list) => {
@@ -212,12 +213,28 @@ async function fallbackToProxy() {
     const t = video.currentTime;
     video.src = await invoke('media_url', { path: proxy });
     video.currentTime = t;
+    syncAll(); // shows the "Preview copy" label
   } catch (e) {
     overlay(null);
     if (String(e) !== 'cancelled') toast(`Couldn't create a preview: ${String(e).slice(0, 200)}`, 6000);
   }
 }
-video.addEventListener('error', () => S.path && fallbackToProxy());
+let netRetries = 0;
+video.addEventListener('error', () => {
+  if (!S.path) return;
+  const code = video.error && video.error.code;
+  // Only a format the webview really can't decode gets a preview copy (3 = decode, 4 = unsupported).
+  if (code === 3 || code === 4) return fallbackToProxy();
+  // A loading hiccup: reload the original where we were instead of dropping quality.
+  if (netRetries++ < 2) {
+    const t = currentT();
+    const src = video.src;
+    video.src = src;
+    video.currentTime = t;
+  } else {
+    toast("Couldn't load the video. Try opening it again", 5000);
+  }
+});
 video.addEventListener('loadeddata', () => {
   // Audio-only playback of an unsupported video codec shows up as 0×0.
   if (S.path && video.videoWidth === 0) fallbackToProxy();
@@ -340,12 +357,19 @@ function layoutFrame() {
   const vw = video.videoWidth || (S.info && S.info.width) || 16;
   const vh = video.videoHeight || (S.info && S.info.height) || 9;
   const scale = Math.min(W / vw, H / vh);
-  const w = Math.max(0, vw * scale);
-  const h = Math.max(0, vh * scale);
-  Object.assign(vframe.style, { width: `${w}px`, height: `${h}px`, left: `${(stage.clientWidth - w) / 2}px`, top: `${(H - h) / 2 + pad}px` });
+  // Whole device pixels: a frame at a fractional position is resampled again and comes out soft.
+  const dpr = window.devicePixelRatio || 1;
+  const snap = (v) => Math.round(v * dpr) / dpr;
+  const w = snap(Math.max(0, vw * scale));
+  const h = snap(Math.max(0, vh * scale));
+  Object.assign(vframe.style, { width: `${w}px`, height: `${h}px`, left: `${snap((stage.clientWidth - w) / 2)}px`, top: `${snap((H - h) / 2 + pad)}px` });
   renderZoomBox();
 }
 new ResizeObserver(layoutFrame).observe($('#stage'));
+// Display scaling changes (e.g. the window moves to a 150% monitor) need a fresh pixel snap.
+(function watchDpr() {
+  matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => { layoutFrame(); watchDpr(); }, { once: true });
+})();
 video.addEventListener('loadedmetadata', layoutFrame);
 
 const selectedZoom = () => S.zooms.find((z) => z.id === S.selectedZoom) || null;
@@ -1200,6 +1224,8 @@ function syncAll() {
   document.body.classList.toggle('empty', !has);
   document.body.classList.toggle('mode-watch', S.mode === 'watch');
   document.body.classList.toggle('mode-edit', S.mode === 'edit');
+  // Watching a preview copy (format the webview can't decode)? Say so; exports still use the original.
+  $('#w-proxy').hidden = $('#e-proxy').hidden = !(has && S.usingProxy);
   for (const id of ['#w-play', '#w-prev-frame', '#w-next-frame', '#w-back5', '#w-fwd5', '#w-back10', '#w-fwd10', '#w-split']) $(id).disabled = !has;
   renderWatch();
   for (const id of ['#btn-play', '#btn-to-start', '#btn-back10', '#btn-back5', '#btn-fwd5', '#btn-fwd10', '#btn-export']) $(id).disabled = !has || (id === '#btn-export' && S.busy === 'export');
