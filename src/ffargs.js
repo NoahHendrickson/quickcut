@@ -192,7 +192,9 @@ export function snapToKeyframe(keyframes, t) {
 /**
  * Work out how an export will be done.
  * edit = { inT, outT, exact, keyframeIn, slow:{enabled,start,end,speed,muteAudio},
- *          sfx:[{path,at,volume}], origVolume }
+ *          sfx:[{path,at,volume}], origVolume, zooms, freezes:[{at, hold}] }
+ * A freeze holds the frame at source time `at` for `hold` seconds (with silence),
+ * then carries on: it adds time to the video.
  */
 export function planExport(src, edit) {
   const slowOn =
@@ -201,10 +203,14 @@ export function planExport(src, edit) {
     Math.abs(edit.slow.speed - 1) > 1e-6 &&
     Math.min(edit.slow.end, edit.outT) - Math.max(edit.slow.start, edit.inT) > 0.01;
   const zoomsIn = (edit.zooms || []).filter((z) => z.amount > 1.001 && z.end > edit.inT && z.start < edit.outT);
-  const copyVideo = !slowOn && !edit.exact && zoomsIn.length === 0 && src.hasVideo;
+  const freezes = (edit.freezes || [])
+    .filter((f) => f.hold > 0.01 && f.at >= edit.inT - 1e-6 && f.at <= edit.outT + 1e-6)
+    .sort((a, b) => a.at - b.at);
+  const copyVideo = !slowOn && !edit.exact && zoomsIn.length === 0 && freezes.length === 0 && src.hasVideo;
   const reasons = [];
   if (slowOn) reasons.push(edit.slow.speed < 1 ? 'slow motion' : 'speed-up');
   if (zoomsIn.length) reasons.push('zoom');
+  if (freezes.length) reasons.push('freeze frame');
   if (edit.exact) reasons.push('frame-exact start');
 
   const start = copyVideo ? Math.min(edit.keyframeIn ?? edit.inT, edit.inT) : edit.inT;
@@ -221,15 +227,28 @@ export function planExport(src, edit) {
   } else {
     segments.push({ from: 0, to: dur, speed: 1 });
   }
-  const outDuration = segments.reduce((acc, s) => acc + (s.to - s.from) / s.speed, 0);
+  // Freezes: a "hold" segment between the two halves of whatever segment they land in.
+  for (const f of freezes) {
+    const p = Math.max(0, Math.min(dur, f.at - start));
+    const i = segments.findIndex((s) => !s.hold && p >= s.from - 1e-9 && p <= s.to + 1e-9);
+    const hold = { from: p, to: p, speed: 1, hold: f.hold };
+    if (i < 0) { segments.push(hold); continue; }
+    const s = segments[i];
+    if (p - s.from <= EPS) segments.splice(i, 0, hold);
+    else if (s.to - p <= EPS) segments.splice(i + 1, 0, hold);
+    else segments.splice(i, 1, { ...s, to: p }, hold, { ...s, from: p });
+  }
+  const segLen = (s) => (s.hold ? s.hold : (s.to - s.from) / s.speed);
+  const outDuration = segments.reduce((acc, s) => acc + segLen(s), 0);
 
-  // Map a source timestamp to output time.
+  // Map a source timestamp to output time (a freeze at t pushes everything after t later).
   const mapTime = (t) => {
     const rel = t - start;
     let acc = 0;
     for (const s of segments) {
+      if (s.hold) { if (rel > s.from + 1e-9) acc += s.hold; continue; }
       if (rel <= s.to + 1e-9) return acc + Math.max(0, rel - s.from) / s.speed;
-      acc += (s.to - s.from) / s.speed;
+      acc += segLen(s);
     }
     return acc;
   };
@@ -240,7 +259,7 @@ export function planExport(src, edit) {
 
   const origVolume = edit.origVolume ?? 1;
   const audioProcessed =
-    sfx.length > 0 || Math.abs(origVolume - 1) > 1e-6 || (slowOn && src.audioCount > 0);
+    sfx.length > 0 || Math.abs(origVolume - 1) > 1e-6 || ((slowOn || freezes.length > 0) && src.audioCount > 0);
   const mergesTracks = audioProcessed && src.audioCount > 1;
 
   let ext = (src.ext || 'mp4').toLowerCase();
@@ -268,6 +287,7 @@ export function planExport(src, edit) {
     zooms: zoomsIn.map((z) => ({ ...z, start: z.start - start, end: z.end - start })),
     mode, summary, reasons, start, dur, outDuration, segments, sfx, ext,
     audioProcessed, mergesTracks, origVolume, slowOn,
+    freezes, segmented: slowOn || freezes.length > 0, mapTime,
     muteSlow: slowOn && !!edit.slow.muteAudio,
     snapDelta: copyVideo ? edit.inT - start : 0,
     // How far past the keyframe to put -ss so ffmpeg lands exactly on it.
@@ -294,19 +314,27 @@ function audioGraph(src, plan, audioInput, sfxInputBase) {
     label = 'amerged';
   }
 
-  if (plan.slowOn && src.audioCount > 0) {
+  if (plan.segmented && src.audioCount > 0) {
     const n = plan.segments.length;
-    const outs = plan.segments.map((_, i) => `as${i}`);
-    g.push(n > 1 ? `[${label}]asplit=${n}${outs.map((o) => `[${o}in]`).join('')}` : `[${label}]anull[as0in]`);
+    const real = plan.segments.filter((s) => !s.hold);
+    const lastReal = real[real.length - 1];
+    // Holds are silence; concat needs every piece in one format, so pin it when there are any.
+    const norm = plan.freezes.length ? ',aformat=sample_rates=48000:channel_layouts=stereo' : '';
+    g.push(real.length > 1 ? `[${label}]asplit=${real.length}${real.map((_, k) => `[ar${k}]`).join('')}` : `[${label}]anull[ar0]`);
+    let k = 0;
     plan.segments.forEach((s, i) => {
-      const trim = i === n - 1 ? `atrim=start=${fmt(s.from)}` : `atrim=start=${fmt(s.from)}:end=${fmt(s.to)}`;
-      let chain = `[${outs[i]}in]${trim},asetpts=PTS-STARTPTS`;
+      if (s.hold) {
+        g.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${fmt(s.hold)}[as${i}]`);
+        return;
+      }
+      const trim = s === lastReal ? `atrim=start=${fmt(s.from)}` : `atrim=start=${fmt(s.from)}:end=${fmt(s.to)}`;
+      let chain = `[ar${k++}]${trim},asetpts=PTS-STARTPTS`;
       if (s.speed !== 1) chain += `,${atempoChain(s.speed)}`;
       if (s.slow && plan.muteSlow) chain += ',volume=0';
-      g.push(`${chain}[${outs[i]}]`);
+      g.push(`${chain}${norm}[as${i}]`);
     });
-    g.push(`${outs.map((o) => `[${o}]`).join('')}concat=n=${n}:v=0:a=1[aslow]`);
-    label = 'aslow';
+    g.push(`${plan.segments.map((_, i) => `[as${i}]`).join('')}concat=n=${n}:v=0:a=1[aseg]`);
+    label = 'aseg';
   }
 
   if (Math.abs(plan.origVolume - 1) > 1e-6) {
@@ -364,15 +392,24 @@ export function buildExportArgs(src, plan, opts) {
     vSrc = '[vzoom]';
     vMap = '[vzoom]';
   }
-  if (plan.mode === 'reencode' && plan.slowOn) {
+  if (plan.mode === 'reencode' && plan.segmented) {
     const n = plan.segments.length;
+    const half = 0.5 / (src.fps || 30);
+    const lastReal = plan.segments.filter((s) => !s.hold).pop();
     graph.push(
       n > 1
         ? `${vSrc}split=${n}${plan.segments.map((_, i) => `[vs${i}in]`).join('')}`
         : `${vSrc}null[vs0in]`,
     );
     plan.segments.forEach((s, i) => {
-      const trim = i === n - 1 ? `trim=start=${fmt(s.from)}` : `trim=start=${fmt(s.from)}:end=${fmt(s.to)}`;
+      if (s.hold) {
+        // The one frame on screen at that moment, repeated for the hold.
+        const at = Math.max(0, Math.min(s.from, plan.dur - 2 * half));
+        graph.push(`[vs${i}in]trim=start=${fmt(Math.max(0, at - half))}:end=${fmt(at + half)},setpts=PTS-STARTPTS,` +
+          `tpad=stop_mode=clone:stop_duration=${fmt(s.hold)},trim=duration=${fmt(s.hold)},setpts=PTS-STARTPTS[vs${i}]`);
+        return;
+      }
+      const trim = s === lastReal ? `trim=start=${fmt(s.from)}` : `trim=start=${fmt(s.from)}:end=${fmt(s.to)}`;
       // Sped-up parts drop frames back to the source frame rate instead of
       // packing them in (a 60 fps clip at 4x would otherwise become 240 fps).
       const pts = s.speed === 1 ? 'PTS-STARTPTS' : `(PTS-STARTPTS)/${fmt(s.speed)}${s.speed > 1 ? `,fps=${fmt(src.fps || 30)}` : ''}`;
@@ -399,7 +436,7 @@ export function buildExportArgs(src, plan, opts) {
 
   if (plan.mode === 'reencode') {
     args.push(...encoderArgs(encoder, quality, plan.ext));
-    if (plan.slowOn) args.push('-fps_mode', 'vfr');
+    if (plan.segmented) args.push('-fps_mode', 'vfr');
   } else {
     args.push('-c:v', 'copy');
   }
@@ -454,6 +491,34 @@ export function parseTime(str) {
 // ---------------------------------------------------------------------------
 // Splitting into parts
 // ---------------------------------------------------------------------------
+
+/**
+ * A length typed by a person: "2h", "1h30m", "45m", "90s", "1.5h", "1:30:00", "30:00".
+ * A plain number means minutes (people think of parts in minutes). Returns seconds, or NaN.
+ */
+export function parseDuration(text) {
+  const t = String(text).trim().toLowerCase().replace(/\s+/g, '').replace(',', '.');
+  if (!t) return NaN;
+  if (t.includes(':')) return parseTime(t);
+  if (/^\d*\.?\d+$/.test(t)) return Number(t) * 60;
+  const re = /(\d*\.?\d+)(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)/g;
+  let total = 0;
+  let used = 0;
+  for (let m; (m = re.exec(t)); ) {
+    const unit = m[2][0];
+    total += Number(m[1]) * (unit === 'h' ? 3600 : unit === 'm' ? 60 : 1);
+    used += m[0].length;
+  }
+  return used === t.length && total > 0 ? total : NaN;
+}
+
+/** Split points every `len` seconds inside [inT, outT]; the last part gets what's left. */
+export function fixedSplitPoints(inT, outT, len, minLast = 0.5) {
+  const pts = [];
+  if (!(len > 0)) return pts;
+  for (let t = inT + len; t < outT - minLast; t += len) pts.push(t);
+  return pts;
+}
 
 /** n-1 evenly spaced split points inside [inT, outT]. */
 export function evenSplitPoints(inT, outT, n) {

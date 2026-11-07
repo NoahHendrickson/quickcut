@@ -1,7 +1,7 @@
 import {
   parseProbe, planExport, buildExportArgs, buildProxyArgs, pickEncoder, snapToKeyframe,
   ENCODER_CANDIDATES, ENCODERS, VENDOR_LABEL, formatTime, parseTime,
-  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, zoomRamp,
+  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, zoomRamp, parseDuration, fixedSplitPoints,
 } from './ffargs.js';
 
 const T = window.__TAURI__;
@@ -46,21 +46,22 @@ const S = {
   sfx: [], // {id, path, name, at, volume, duration}
   zooms: [], // {id, start, end, amount, fx, fy, ease} (source seconds, sorted, non-overlapping)
   selectedZoom: null,
+  freezes: [], // {id, at, hold}: hold the frame at source time `at` for `hold` seconds, then carry on
+  selectedFreeze: null,
+  holding: null, // id of the freeze being held during preview playback
+  justHeld: null,
   selectedSfx: null,
   origVolume: 1,
   exact: false,
   keyframeIn: null,
   keyframeFor: null,
-  // Split points are absolute source times (pts). dts[pts] is that keyframe's
-  // decode time, so lossless parts end exactly where the next one starts.
-  split: { enabled: false, count: 4, points: [], dts: new Map(), seq: 0, pending: null },
   // 'new' (original untouched) unless the user explicitly picks 'replace'; never remembered.
   save: { mode: 'new', name: '', nameEdited: false },
   view: { start: 0, end: 1 },
   thumbs: null, // {url, count, aspect}: whole video
   detail: null, // {url, start, end, count}: exact frames for the zoomed-in view
   wave: null, // media URL of the waveform PNG
-  tool: 'trim', // trim | slow | sound | amp | split | export
+  tool: 'trim', // trim | slow | zoom | freeze | sound | amp | export
   // Watch = a player for investigating clips; Edit = the editor. Remembered between launches.
   mode: settings.mode === 'edit' ? 'edit' : 'watch',
   watchRate: Number(settings.watchRate) > 0 ? Number(settings.watchRate) : 1,
@@ -132,27 +133,22 @@ async function openVideo(path) {
 
   stopAllSfx();
   Object.assign(S, {
-    path, info, usingProxy: false, inT: 0, outT: info.duration, sfx: [], selectedSfx: null, zooms: [], selectedZoom: null,
+    path, info, usingProxy: false, inT: 0, outT: info.duration, sfx: [], selectedSfx: null, zooms: [], selectedZoom: null, freezes: [], selectedFreeze: null,
     origVolume: 1, exact: false, keyframeIn: null, keyframeFor: null, thumbs: null, detail: null, wave: null, confirmReplace: false,
     loop: { a: null, b: null }, mag: { scale: 1, x: 0, y: 0 }, quick: null,
     view: { start: 0, end: Math.max(info.duration, 0.1) },
   });
   S.slow = { enabled: false, start: 0, end: 0, speed: S.slow.speed, muteAudio: S.slow.muteAudio };
-  // Split is per video (a short clip shouldn't silently export as parts); the count is remembered.
-  S.split.enabled = false;
-  S.split.points = [];
-  S.split.dts = new Map();
   S.save.nameEdited = false;
   S.save.name = defaultSaveName();
   settings.lastDir = dirname(path);
   saveSettings();
 
   $('#empty-state').hidden = true;
-  $('#clip-name').textContent = basename(path);
-  $('#btn-open').title = `${path}\nClick to open another video (Ctrl+O)`;
-  $('#clip-info').textContent = describe(info);
   $('#time-total').textContent = fmt(info.duration);
-  T.window.getCurrentWindow().setTitle(`${basename(path)} — QuickCut`).catch(() => {});
+  // The file name + details live in the window's own title bar (no header taking space from the video).
+  T.window.getCurrentWindow().setTitle(`${basename(path)} · ${describe(info)} — QuickCut`).catch(() => {});
+  $('#btn-open').title = `${path}\nOpen another video (Ctrl+O)`;
 
   video.pause();
   video.src = await invoke('media_url', { path });
@@ -180,6 +176,8 @@ function describe(i) {
 
 function renderNav() {
   const idx = S.siblings.indexOf(S.path);
+  // Only show the arrows when the folder has other videos.
+  $('#btn-prev').hidden = $('#btn-next').hidden = S.siblings.length < 2;
   $('#btn-prev').disabled = idx <= 0;
   $('#btn-next').disabled = idx < 0 || idx >= S.siblings.length - 1;
 }
@@ -455,6 +453,7 @@ let shownTime = 0;
 
 function seek(t) {
   if (!S.path) return;
+  cancelHold();
   t = clamp(t, 0, duration());
   shownTime = t;
   seekTarget = t;
@@ -473,8 +472,33 @@ video.addEventListener('seeked', () => {
 });
 const currentT = () => (seeking || seekTarget != null ? shownTime : video.currentTime);
 
+/** Preview a freeze: stop on its frame for the hold, then carry on. */
+let holdTimer = null;
+let resumingHold = false;
+function startHold(f) {
+  video.pause();
+  video.currentTime = f.at + 0.5 / fps(); // not seek(): sound effects keep playing through a freeze
+  S.holding = f.id;
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    S.holding = null;
+    S.justHeld = f.id;
+    resumingHold = true;
+    video.play().catch(() => {});
+  }, f.hold * 1000);
+}
+function cancelHold() {
+  if (!S.holding) return;
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  S.holding = null;
+  setPlayIcon('play');
+  stopAllSfx();
+}
+
 function togglePlay() {
   if (!S.path) return;
+  if (S.holding) return cancelHold();
   if (video.paused) {
     const t = currentT();
     if (S.mode === 'watch' && S.quick) {
@@ -506,9 +530,12 @@ const setPlayIcon = (name) => $$('.play-btn use').forEach((u) => u.setAttribute(
 video.addEventListener('play', () => {
   renderZoomBox();
   setPlayIcon('pause');
-  startSfxAt(currentT());
+  // Coming out of a freeze: sound effects kept playing through it, like in the export.
+  if (resumingHold) resumingHold = false;
+  else startSfxAt(currentT());
 });
 video.addEventListener('pause', () => {
+  if (S.holding) return; // a freeze in the preview: still "playing"
   renderZoomBox();
   setPlayIcon('play');
   video.playbackRate = 1;
@@ -541,6 +568,11 @@ function tick() {
     for (const s of S.sfx) {
       if (s.at > lastT && s.at <= t && t - s.at < 0.3) playSfx(s, 0);
     }
+    // Freeze frames the playhead just reached
+    const jh = S.justHeld && S.freezes.find((f) => f.id === S.justHeld);
+    if (S.justHeld && (!jh || t > jh.at + 0.25 || t < jh.at - 0.01)) S.justHeld = null;
+    const fz = S.freezes.find((f) => f.id !== S.justHeld && f.at >= lastT - 1e-6 && f.at < t && t - f.at < 0.5 && f.at >= S.inT);
+    if (fz) startHold(fz);
     // Keep the playhead in view when zoomed
     const span = S.view.end - S.view.start;
     if (span < duration() && (t > S.view.end || t < S.view.start)) setView(t - span * 0.1, t + span * 0.9);
@@ -654,36 +686,7 @@ function addToLibrary(paths) {
     added++;
   }
   saveLibrary();
-  renderLibrary();
   if (added && S.tool !== 'sound') toast(`Added ${added} sound${added > 1 ? 's' : ''}. Press 1–9 to drop one at the playhead`);
-}
-
-function renderLibrary() {
-  const box = $('#sfx-library');
-  box.innerHTML = '';
-  library.forEach((item, i) => {
-    const chip = document.createElement('div');
-    chip.className = 'sfx-chip';
-    chip.title = `Drop "${item.name}" at the playhead${i < 9 ? ` (${i + 1})` : ''}`;
-    chip.innerHTML = `${i < 9 ? `<span class="key">${i + 1}</span>` : ''}<span class="name"></span>
-      <button class="icon-btn" data-a="play" title="Listen">${icon('play')}</button>
-      <button class="icon-btn del" data-a="del" title="Remove from this list">${icon('x')}</button>`;
-    chip.querySelector('.name').textContent = item.name;
-    chip.addEventListener('click', (e) => {
-      const a = e.target.closest('[data-a]')?.dataset.a;
-      if (a === 'play') return previewLibrarySound(item);
-      if (a === 'del') {
-        library = library.filter((l) => l.id !== item.id);
-        saveLibrary();
-        return renderLibrary();
-      }
-      placeSound(item);
-    });
-    box.appendChild(chip);
-  });
-  $('#sfx-hint').textContent = library.length
-    ? 'Click a sound to drop it at the playhead, then drag it on the timeline'
-    : 'Add your own sound files (MP3, WAV…). They stay here for next time';
 }
 
 function openSfxItem(s) {
@@ -781,20 +784,6 @@ function renderTimeline() {
   kf.hidden = !showKf;
   if (showKf) place(kf, tToX(S.keyframeIn));
 
-  const splitBox = $('#tl-split');
-  splitBox.innerHTML = '';
-  if (has && S.split.enabled) {
-    S.split.points.forEach((p, i) => {
-      const m = document.createElement('div');
-      m.className = 'split-marker' + (S.split.pending ? ' snapping' : '');
-      m.dataset.index = i;
-      m.title = `Part ${i + 2} starts at ${fmt(p)}. Drag to move`;
-      m.innerHTML = `<span>${i + 2}</span>`;
-      place(m, tToX(p));
-      splitBox.appendChild(m);
-    });
-  }
-
   // Zoom clips
   const zBox = $('#tl-zooms');
   zBox.innerHTML = '';
@@ -827,6 +816,19 @@ function renderTimeline() {
     sfxBox.appendChild(m);
   }
 
+  // Freeze frames: a marker on the held frame (the hold adds time, so it has no width here)
+  const fzBox = $('#tl-freezes');
+  fzBox.innerHTML = '';
+  for (const f of S.freezes) {
+    const m = document.createElement('div');
+    m.className = 'freeze-clip' + (f.id === S.selectedFreeze ? ' selected' : '');
+    m.dataset.id = f.id;
+    m.title = `Holds the frame at ${fmt(f.at)} for ${fmtSpeed(f.hold)}s, then carries on. Drag to move`;
+    m.innerHTML = `${icon('freeze')}<span>${fmtSpeed(f.hold)}s</span>`;
+    place(m, tToX(f.at));
+    fzBox.appendChild(m);
+  }
+
   // Audio lane: the video's own sound, waveform scaled by its volume
   const audio = $('#tl-audio');
   const hasAudio = has && S.info.audioCount > 0;
@@ -846,7 +848,6 @@ function renderTimeline() {
     img.style.transform = `scaleY(${clamp(S.origVolume / 2, 0.02, 1)})`;
   }
 
-  $('#trim-length').textContent = has ? fmt(S.outT - S.inT) : '';
   if (has) {
     const span = S.view.end - S.view.start;
     if (document.activeElement !== $('#zoom-slider')) $('#zoom-slider').value = spanToSlider(span);
@@ -917,19 +918,20 @@ function bubble(t) {
 // ---------------------------------------------------------------------------
 let drag = null;
 track.addEventListener('pointerdown', (e) => {
-  if (!S.path || e.button !== 0) return;
+  if (!S.path || e.button !== 0 || e.target.closest('.tl-head')) return;
   const rect = strip.getBoundingClientRect();
   const t = clamp(xToT(e.clientX - rect.left), 0, duration());
   const tgt = e.target;
   let mode = 'scrub';
   let ref = null;
-  const splitEl = tgt.closest('.split-marker');
   const sfxEl = tgt.closest('.sfx-marker');
+  const fzEl = tgt.closest('.freeze-clip');
   if (tgt.closest('#tl-handle-in')) mode = 'in';
   else if (tgt.closest('#tl-handle-out')) mode = 'out';
-  else if (splitEl) {
-    mode = 'split';
-    ref = Number(splitEl.dataset.index);
+  else if (fzEl) {
+    mode = 'freeze';
+    ref = S.freezes.find((f) => f.id === fzEl.dataset.id);
+    if (ref) S.selectedFreeze = ref.id;
   } else if (sfxEl) {
     mode = 'sfx';
     ref = S.sfx.find((s) => s.id === sfxEl.dataset.id);
@@ -950,12 +952,12 @@ track.addEventListener('pointerdown', (e) => {
   drag = {
     mode, ref, t0: t, x0: e.clientX, lastX: e.clientX, acc: 0, fine: false, moved: false, edgeRaf: 0,
     in0: S.inT, out0: S.outT,
-    at0: mode === 'sfx' && ref ? ref.at : 0, p0: mode === 'split' ? S.split.points[ref] : 0,
+    at0: mode === 'sfx' && ref ? ref.at : 0, fz0: mode === 'freeze' && ref ? ref.at : 0,
     s0: S.slow.start, e0: S.slow.end,
     zs0: mode.startsWith('zoom') && ref ? ref.start : 0, ze0: mode.startsWith('zoom') && ref ? ref.end : 0,
   };
   if (mode === 'in' || mode === 'out') $(`#tl-handle-${mode}`).classList.add('active');
-  if (['scrub', 'in', 'out', 'split'].includes(mode)) video.pause();
+  if (['scrub', 'in', 'out', 'freeze'].includes(mode)) video.pause();
   track.setPointerCapture(e.pointerId);
   if (mode === 'scrub') seek(t);
 });
@@ -1004,6 +1006,11 @@ track.addEventListener('pointerup', (e) => {
   if (!moved) {
     // Plain clicks open the matching tool.
     if (mode === 'sfx' && ref) openSfxItem(ref);
+    else if (mode === 'freeze' && ref) {
+      S.tool = 'freeze';
+      seek(ref.at + 0.5 / fps());
+      syncAll();
+    }
     else if (mode.startsWith('zoom')) {
       S.tool = 'zoom';
       video.pause();
@@ -1011,7 +1018,6 @@ track.addEventListener('pointerup', (e) => {
       syncAll();
     }
     else if (mode.startsWith('slow')) setTool('slow');
-    else if (mode === 'split') setTool('split');
     else if (mode === 'audio') {
       if (S.info.audioCount > 0) setTool('amp');
       seek(xToT(e.clientX - strip.getBoundingClientRect().left));
@@ -1022,11 +1028,7 @@ track.addEventListener('pointerup', (e) => {
     }
     return;
   }
-  if (mode === 'in' || mode === 'out') {
-    requestKeyframe();
-    if (S.split.enabled) resetSplit();
-  }
-  if (mode === 'split') snapSplitPoints();
+  if (mode === 'in' || mode === 'out') requestKeyframe();
   syncAll();
 });
 
@@ -1050,21 +1052,19 @@ function applyDrag() {
       seek(S.outT);
       bubble(S.outT);
       break;
+    case 'freeze':
+      if (drag.ref) {
+        drag.ref.at = clamp(Math.floor((drag.fz0 + dt) * fps() + 1e-6) / fps(), S.inT, Math.max(S.inT, S.outT - 1 / fps()));
+        seek(drag.ref.at + 0.5 / fps()); // show the exact frame being held
+        bubble(drag.ref.at);
+      }
+      break;
     case 'sfx':
       if (drag.ref) {
         drag.ref.at = clamp(drag.at0 + dt, 0, d);
         bubble(drag.ref.at);
       }
       break;
-    case 'split': {
-      const pts = S.split.points;
-      const lo = drag.ref > 0 ? pts[drag.ref - 1] : S.inT;
-      const hi = drag.ref < pts.length - 1 ? pts[drag.ref + 1] : S.outT;
-      pts[drag.ref] = clamp(drag.p0 + dt, lo + minLen, hi - minLen);
-      seek(pts[drag.ref]);
-      bubble(pts[drag.ref]);
-      break;
-    }
     case 'zoom-start':
     case 'zoom-end':
     case 'zoom-move': {
@@ -1105,7 +1105,7 @@ function applyDrag() {
 $('#tl').addEventListener(
   'wheel',
   (e) => {
-    if (!S.path) return;
+    if (!S.path || e.target.closest('.tl-head')) return;
     e.preventDefault();
     const rect = strip.getBoundingClientRect();
     const x = clamp(e.clientX - rect.left, 0, rect.width);
@@ -1139,8 +1139,6 @@ function bindTimeField(el, apply) {
     if (e.key === 'Escape') { el.value = ''; el.blur(); syncAll(); }
   });
 }
-bindTimeField($('#in-time'), (t) => setIn(t));
-bindTimeField($('#out-time'), (t) => setOut(t));
 
 // ---------------------------------------------------------------------------
 // Trim, slow-mo, keyframes
@@ -1161,7 +1159,6 @@ function setOut(t) {
 }
 function afterTrimChange() {
   requestKeyframe();
-  if (S.split.enabled) resetSplit();
   syncAll();
 }
 
@@ -1198,117 +1195,20 @@ function addSlowAtPlayhead() {
 }
 
 // ---------------------------------------------------------------------------
-// Split into parts
-// ---------------------------------------------------------------------------
-// Snap even with slow-mo on: parts outside the slow zone are still stream-copied.
-const splitNeedsKeyframes = () => !S.exact;
-
-function resetSplit() {
-  if (!S.path) return;
-  S.split.count = clamp(Math.round(S.split.count) || 2, 2, 99);
-  S.split.points = evenSplitPoints(S.inT, S.outT, S.split.count);
-  S.split.dts = new Map();
-  snapSplitPoints();
-}
-
-/** Move every cut onto the nearest keyframe so each part can be stream-copied. */
-function snapSplitPoints() {
-  if (!S.path || !splitNeedsKeyframes()) {
-    S.split.pending = null;
-    syncAll();
-    return Promise.resolve();
-  }
-  const seq = ++S.split.seq;
-  const path = S.path;
-  const work = (async () => {
-    const pts = [...S.split.points];
-    const snapped = [];
-    const dts = new Map();
-    for (let i = 0; i < pts.length; i++) {
-      const lo = i > 0 ? snapped[i - 1] : S.inT;
-      const kfs = await invoke('keyframes_near', { path, t: pts[i], start: S.info.start });
-      const k = nearestKeyframe(kfs, pts[i], lo, S.outT);
-      snapped.push(k.t);
-      if (k.dts != null) dts.set(k.t, k.dts);
-    }
-    if (seq !== S.split.seq || path !== S.path) return;
-    // Two cuts can land on one keyframe when parts are shorter than the keyframe gap.
-    S.split.points = partsFromPoints(S.inT, S.outT, snapped).slice(1).map((p) => p.inT);
-    S.split.dts = dts;
-    S.split.pending = null;
-    syncAll();
-  })();
-  S.split.pending = work;
-  work.catch((e) => {
-    if (seq === S.split.seq) S.split.pending = null;
-    toast(`Couldn't find keyframes: ${String(e).slice(0, 160)}`, 5000);
-  });
-  syncAll();
-  return work;
-}
-const splitParts = () => partsFromPoints(S.inT, S.outT, S.split.points);
-function setSplitCount(n) {
-  S.split.count = clamp(Math.round(n) || 2, 2, 99);
-  S.split.enabled = true;
-  resetSplit();
-}
-
-// ---------------------------------------------------------------------------
-// Sync all visible state
-// ---------------------------------------------------------------------------
 function syncAll() {
   const has = !!S.path;
   document.body.classList.toggle('empty', !has);
   document.body.classList.toggle('mode-watch', S.mode === 'watch');
   document.body.classList.toggle('mode-edit', S.mode === 'edit');
-  for (const id of ['#w-play', '#w-prev-frame', '#w-next-frame', '#w-back5', '#w-fwd5', '#w-back10', '#w-fwd10']) $(id).disabled = !has;
+  for (const id of ['#w-play', '#w-prev-frame', '#w-next-frame', '#w-back5', '#w-fwd5', '#w-back10', '#w-fwd10', '#w-split']) $(id).disabled = !has;
   renderWatch();
   for (const id of ['#btn-play', '#btn-to-start', '#btn-back10', '#btn-back5', '#btn-fwd5', '#btn-fwd10', '#btn-export']) $(id).disabled = !has || (id === '#btn-export' && S.busy === 'export');
 
-  // Tool buttons + which options are showing
-  $$('.tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === S.tool));
-  $('.tool[data-tool="slow"]').classList.toggle('on', S.slow.enabled);
-  $('.tool[data-tool="zoom"]').classList.toggle('on', S.zooms.length > 0);
-  const zsel = selectedZoom();
-  $('.opt[data-for="zoom"]').classList.toggle('is-on', !!zsel);
-  if (zsel) {
-    $$('#zoom-amounts button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === zsel.amount));
-    $$('#zoom-eases button').forEach((b) => b.classList.toggle('on', b.dataset.v === zsel.ease));
-  }
+  // Rows (controls next to each lane) + the export sheet
+  $$('.opt').forEach((o) => o.classList.toggle('active', o.dataset.for === S.tool));
   renderZoomBox();
   lastZoomCss = '!';
-  $('.tool[data-tool="sound"]').classList.toggle('on', S.sfx.length > 0);
-  $('.tool[data-tool="amp"]').classList.toggle('on', Math.abs(S.origVolume - 1) > 1e-6);
-  $('.tool[data-tool="split"]').classList.toggle('on', S.split.enabled);
-  $('.tool[data-tool="trim"]').classList.toggle('on', has && (S.inT > 0.001 || S.outT < duration() - 0.001));
-  $$('.opt').forEach((o) => o.classList.toggle('active', o.dataset.for === S.tool));
-  $('.opt[data-for="slow"]').classList.toggle('is-on', S.slow.enabled);
-  $('.opt[data-for="split"]').classList.toggle('is-on', S.split.enabled);
-
-  // Trim
-  if (document.activeElement !== $('#in-time')) $('#in-time').value = has ? fmt(S.inT) : '';
-  if (document.activeElement !== $('#out-time')) $('#out-time').value = has ? fmt(S.outT) : '';
-  // Slow-mo
-  if (document.activeElement !== $('#speed-input')) $('#speed-input').value = fmtSpeed(S.slow.speed);
-  $('#speed-desc').textContent = describeSpeed(S.slow.speed);
-  $$('#slow-audio button').forEach((b) => b.classList.toggle('on', (b.dataset.v === 'mute') === S.slow.muteAudio));
-  // Sound
-  const sel = S.sfx.find((x) => x.id === S.selectedSfx);
-  $('#sfx-selected').hidden = !sel;
-  if (sel) {
-    $('#sfx-item-name').textContent = sel.name;
-    $('#sfx-item-name').title = `${sel.name} at ${fmt(sel.at)}`;
-    $('#sfx-item-volume').value = sel.volume;
-    $('#sfx-item-volume-label').textContent = `${Math.round(sel.volume * 100)}%`;
-  }
-  // Amplitude
-  $('#orig-volume').value = S.origVolume;
-  $('#orig-volume-label').textContent = `${Math.round(S.origVolume * 100)}%`;
-  $$('#amp-presets button').forEach((b) => b.classList.toggle('on', Math.abs(Number(b.dataset.v) - S.origVolume) < 1e-6));
-  $('#amp-hint').textContent = !has ? '' : S.info.audioCount === 0 ? 'This video has no sound'
-    : S.origVolume > 1.001 ? 'Boosted: loud parts may distort' : 'Loudness is shown under the filmstrip';
-  // Split
-  if (document.activeElement !== $('#split-count')) $('#split-count').value = S.split.count;
+  renderRows();
   // Export
   $('#exact').checked = S.exact;
   $('#set-quality').value = settings.quality;
@@ -1327,6 +1227,7 @@ function currentEdit() {
     slow: { ...S.slow },
     sfx: S.sfx.map((s) => ({ path: s.path, at: s.at, volume: s.volume })),
     zooms: S.zooms.map(({ start, end, amount, fx, fy, ease }) => ({ start, end, amount, fx, fy, ease })),
+    freezes: S.freezes.map(({ at, hold }) => ({ at, hold })),
     origVolume: S.origVolume,
   };
 }
@@ -1334,7 +1235,7 @@ function currentEdit() {
 function updateExportInfo() {
   if (!S.path) return;
   const plan = planExport(S.info, currentEdit());
-  const nParts = S.split.enabled ? splitParts().length : 1;
+  const nParts = 1;
   renderSave(plan.ext, nParts);
 
   const modeEl = $('#export-mode');
@@ -1356,7 +1257,6 @@ function updateExportInfo() {
     lines.push(`Starts ${plan.snapDelta.toFixed(2)}s early, at the nearest keyframe. "Exact start frame" under Advanced avoids that.`);
   }
   if (plan.mergesTracks) lines.push(`The ${S.info.audioCount} audio tracks are mixed into one.`);
-  if (nParts > 1 && S.split.pending) lines.push('Snapping cuts to keyframes…');
   lines.push(nParts > 1 ? `${nParts} videos, ${fmt(plan.outDuration)} in total.` : `${fmt(plan.outDuration)} long.`);
   $('#export-detail').textContent = lines.join(' ');
 }
@@ -1366,7 +1266,7 @@ function updateExportInfo() {
 // ---------------------------------------------------------------------------
 const cleanName = (n) => n.replace(/[\\/:*?"<>|]/g, '_');
 const defaultSaveName = () => (S.path ? stemOf(S.path) + (settings.suffix || '') : '');
-const saveMode = () => (S.split.enabled ? 'new' : S.save.mode); // splitting always makes new files
+const saveMode = () => S.save.mode;
 
 /** Name for output #part (0 = single file). */
 function saveName(part = 0, pad = 1) {
@@ -1381,10 +1281,6 @@ function renderSave(ext, nParts) {
   const mode = saveMode();
   $$('#save-seg button').forEach((b) => {
     b.setAttribute('aria-checked', String(b.dataset.mode === mode));
-    if (b.dataset.mode === 'replace') {
-      b.disabled = S.split.enabled;
-      b.title = S.split.enabled ? 'Not available when splitting: parts are always saved as new videos' : '';
-    }
   });
   $('#save-new').hidden = mode !== 'new';
   $('#save-safe').hidden = mode !== 'new';
@@ -1430,6 +1326,11 @@ T.event.listen('ffmpeg-progress', (e) => {
     const overall = clamp(p.base + ratio * p.weight, 0, 1);
     $('#export-bar').style.width = `${(overall * 100).toFixed(1)}%`;
     $('#export-status').textContent = `${p.label}${Math.round(overall * 100)}%${speed && speed !== 'N/A' ? ` · ${speed}` : ''}`;
+  } else if (S.busy === 'split') {
+    const p = S.progress || { base: 0, weight: 1, label: '' };
+    const overall = clamp(p.base + ratio * p.weight, 0, 1);
+    $('#split-bar').style.width = `${(overall * 100).toFixed(1)}%`;
+    $('#split-status').textContent = `${p.label}${Math.round(overall * 100)}%`;
   } else if (S.busy === 'proxy') {
     $('#overlay-bar').style.width = `${(ratio * 100).toFixed(1)}%`;
   }
@@ -1486,19 +1387,7 @@ async function doExport() {
     const base = currentEdit();
     if (planExport(S.info, base).mode !== 'reencode') base.keyframeIn = await ensureKeyframe();
     else if (S.encodersReady) await S.encodersReady;
-    let edits = [base];
-    if (S.split.enabled) {
-      if (S.split.pending) await S.split.pending;
-      if (splitNeedsKeyframes() && S.split.points.some((p) => !S.split.dts.has(p))) await snapSplitPoints();
-      const parts = splitParts();
-      edits = parts.map((p) => ({
-        ...base,
-        inT: p.inT,
-        outT: p.outT,
-        keyframeIn: p.index === 1 ? base.keyframeIn : p.inT,
-        endDts: p.index < parts.length ? S.split.dts.get(p.outT) ?? null : null,
-      }));
-    }
+    const edits = [base];
     total = edits.length;
     const plans = edits.map((e) => planExport(S.info, e));
     const totalDur = plans.reduce((a, p) => a + p.outDuration, 0) || 1;
@@ -1591,6 +1480,7 @@ function setMode(mode) {
     }
   }
   if (S.quick) S.quick = null;
+  cancelHold();
   S.mode = mode;
   settings.mode = mode;
   saveSettings();
@@ -2075,6 +1965,199 @@ $('#w-trim-save').addEventListener('click', quickSave);
 $('#w-trim-done').addEventListener('click', () => endQuickTrim(true));
 $('#w-saved-reveal').addEventListener('click', () => S.quick?.saved && invoke('reveal', { path: S.quick.saved }));
 
+// ---------------------------------------------------------------------------
+// Split: turn one video into several, from a small dialog. Whole video, lossless.
+// ---------------------------------------------------------------------------
+const SPLIT_MAX = 200;
+const SP = {
+  mode: settings.splitMode === 'length' ? 'length' : 'count',
+  count: clamp(Math.round(Number(settings.splitCount)) || 4, 2, 99),
+  len: Number(settings.splitLen) > 0 ? Number(settings.splitLen) : 3600,
+  points: [], // cut times after snapping to keyframes
+  dts: new Map(), // cut time -> that keyframe's decode time, so parts join exactly
+  snapping: null, // promise while keyframes are being looked up
+  seq: 0,
+  saved: [],
+};
+const splitDlg = $('#split');
+/** Where we'd like to cut, before keyframes. */
+function wantedSplitPoints() {
+  const d = duration();
+  return SP.mode === 'count' ? evenSplitPoints(0, d, SP.count) : fixedSplitPoints(0, d, SP.len);
+}
+/** Move every cut onto the nearest keyframe so each part is a stream copy. */
+function snapSplit() {
+  const seq = ++SP.seq;
+  const path = S.path;
+  const wanted = wantedSplitPoints();
+  SP.points = wanted;
+  SP.dts = new Map();
+  if (wanted.length > SPLIT_MAX - 1) { SP.snapping = null; return renderSplit(); }
+  SP.snapping = (async () => {
+    await null; // finish assigning SP.snapping before this can clear it
+    const d = duration();
+    const snapped = [];
+    const dts = new Map();
+    for (const t of wanted) {
+      const kfs = await invoke('keyframes_near', { path, t, start: S.info.start });
+      const k = nearestKeyframe(kfs, t, snapped.length ? snapped[snapped.length - 1] : 0, d);
+      snapped.push(k.t);
+      if (k.dts != null) dts.set(k.t, k.dts);
+    }
+    if (seq !== SP.seq || path !== S.path) return;
+    // Two cuts can land on one keyframe when parts are shorter than the keyframe gap.
+    SP.points = partsFromPoints(0, d, snapped).slice(1).map((p) => p.inT);
+    SP.dts = dts;
+    SP.snapping = null;
+    renderSplit();
+  })();
+  SP.snapping.catch((e) => {
+    if (seq === SP.seq) SP.snapping = null;
+    toast(`Couldn't find keyframes: ${String(e).slice(0, 160)}`, 5000);
+  });
+  renderSplit();
+}
+let splitTimer = null;
+const resnapSplit = () => {
+  clearTimeout(splitTimer);
+  splitTimer = setTimeout(() => { splitTimer = null; snapSplit(); }, 250);
+  renderSplit();
+};
+
+function renderSplit() {
+  if (!S.path) return;
+  const d = duration();
+  const running = S.busy === 'split';
+  const done = !running && SP.saved.length > 0;
+  $$('#split-mode button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === SP.mode)));
+  $$('#split .split-field').forEach((f) => (f.hidden = f.dataset.for !== SP.mode));
+  if (document.activeElement !== $('#split-count')) $('#split-count').value = SP.count;
+  if (document.activeElement !== $('#split-len')) $('#split-len').value = formatTime(SP.len, false);
+  $$('#split-presets button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === SP.len));
+  for (const el of $$('#split-mode button, #split .split-field button, #split .split-field input')) el.disabled = running || done;
+
+  const tooMany = wantedSplitPoints().length > SPLIT_MAX - 1;
+  const parts = partsFromPoints(0, d, SP.points);
+  const n = parts.length;
+  $('#split-each').textContent = `parts of about ${formatTime(d / SP.count, false)}`;
+  // The list of parts, with their real (keyframe) times once known
+  const list = $('#split-list');
+  const show = parts.length > 14 ? [...parts.slice(0, 12), null, parts[parts.length - 1]] : parts;
+  list.innerHTML = tooMany ? '' : show.map((p) => (p
+    ? `<li><span class="i">${p.index}</span><span>${formatTime(p.inT, false)} → ${formatTime(p.outT, false)}</span><b>${formatTime(p.outT - p.inT, false)}</b></li>`
+    : `<li class="more">… ${parts.length - 13} more</li>`)).join('');
+  list.classList.toggle('pending', !!SP.snapping || !!splitTimer);
+  const note = $('#split-note');
+  if (tooMany) note.textContent = `That makes more than ${SPLIT_MAX} parts. Choose a longer length.`;
+  else if (n < 2) note.textContent = SP.mode === 'length' ? 'The video is shorter than that, so there is nothing to split.' : 'This video is too short to split.';
+  else if (SP.snapping || splitTimer) note.textContent = 'Finding the cut points…';
+  else {
+    const fewer = SP.mode === 'count' && n < SP.count ? ` Only ${n} parts fit: lossless cuts start on a keyframe and this video has few of them.` : '';
+    note.textContent = `Lossless: each part is copied bit for bit, cut at the nearest keyframe. Saved next to the original as ${stemOf(S.path)}_part1… Your original stays untouched.${fewer}`;
+  }
+  const go = $('#split-go');
+  go.textContent = running ? 'Splitting…' : n >= 2 ? `Split into ${n} videos` : 'Split';
+  go.disabled = running || tooMany || n < 2;
+  $('#split-cancel').textContent = running ? 'Stop' : 'Cancel';
+  $('#split-progress').hidden = !running;
+  $('#split-actions').hidden = done;
+  $('#split-done').hidden = !done;
+}
+
+function openSplit() {
+  if (!S.path || S.busy) return;
+  video.pause();
+  closeMenu();
+  SP.saved = [];
+  $('#split-src').textContent = `${basename(S.path)} · ${formatTime(duration(), false)}`;
+  splitDlg.showModal();
+  snapSplit();
+}
+function setSplitMode(mode) { SP.mode = mode; settings.splitMode = mode; saveSettings(); resnapSplit(); }
+function setSplitCount(n) {
+  SP.count = clamp(Math.round(n) || 2, 2, 99);
+  settings.splitCount = SP.count;
+  saveSettings();
+  resnapSplit();
+}
+function setSplitLen(sec) {
+  SP.len = Math.max(1, sec);
+  settings.splitLen = SP.len;
+  saveSettings();
+  resnapSplit();
+}
+
+async function runSplit() {
+  if (!S.path || S.busy) return;
+  if (splitTimer) { clearTimeout(splitTimer); splitTimer = null; snapSplit(); }
+  if (SP.snapping) await SP.snapping;
+  const d = duration();
+  const parts = partsFromPoints(0, d, SP.points);
+  if (parts.length < 2) return;
+  S.busy = 'split';
+  SP.saved = [];
+  const startedAt = performance.now();
+  let current = null;
+  renderSplit();
+  try {
+    const edits = parts.map((p) => ({
+      inT: p.inT, outT: p.outT, exact: false, keyframeIn: p.inT,
+      endDts: p.index < parts.length ? SP.dts.get(p.outT) ?? null : null,
+      slow: { enabled: false, start: 0, end: 0, speed: 1 }, sfx: [], zooms: [], origVolume: 1,
+    }));
+    const plans = edits.map((e) => planExport(S.info, e));
+    const pad = String(plans.length).length;
+    let done = 0;
+    for (let i = 0; i < plans.length; i++) {
+      const name = `${stemOf(S.path)}_part${String(i + 1).padStart(pad, '0')}`;
+      const outputPath = await invoke('output_path', { src: S.path, ext: plans[i].ext, name, dir: settings.outDir || null });
+      current = outputPath;
+      S.progress = { base: done / d, weight: plans[i].outDuration / d, label: `Part ${i + 1} of ${plans.length} · ` };
+      await runExport(plans[i], outputPath);
+      SP.saved.push(outputPath);
+      current = null;
+      done += plans[i].outDuration;
+    }
+    const secs = (performance.now() - startedAt) / 1000;
+    $('#split-saved').textContent = `Saved ${SP.saved.length} videos in ${secs < 10 ? secs.toFixed(1) : Math.round(secs)}s`;
+  } catch (e) {
+    if (current) invoke('remove_file', { path: current });
+    const kept = SP.saved.length ? ` ${SP.saved.length} of ${parts.length} parts were saved.` : '';
+    toast(String(e) === 'cancelled' ? `Split stopped.${kept}` : `Split failed: ${String(e).slice(0, 160)}.${kept}`, 6000);
+    if (SP.saved.length) $('#split-saved').textContent = `Saved ${SP.saved.length} of ${parts.length} videos`;
+  } finally {
+    S.busy = null;
+    S.progress = null;
+    syncAll();
+    renderSplit();
+  }
+}
+
+$('#w-split').addEventListener('click', openSplit);
+$$('#split-mode button').forEach((b) => b.addEventListener('click', () => setSplitMode(b.dataset.mode)));
+$('#split-minus').addEventListener('click', () => setSplitCount(SP.count - 1));
+$('#split-plus').addEventListener('click', () => setSplitCount(SP.count + 1));
+$('#split-count').addEventListener('input', (e) => { const n = Number(e.target.value); if (n >= 2 && n <= 99) setSplitCount(n); });
+$('#split-count').addEventListener('change', () => renderSplit());
+$('#split-len').addEventListener('input', (e) => {
+  const v = parseDuration(e.target.value);
+  e.target.classList.toggle('invalid', e.target.value.trim() !== '' && !(v > 0));
+  if (v > 0) setSplitLen(v);
+});
+$('#split-len').addEventListener('change', (e) => { e.target.classList.remove('invalid'); renderSplit(); });
+$('#split-presets').addEventListener('click', (e) => {
+  const v = Number(e.target.closest('button')?.dataset.v);
+  if (v) setSplitLen(v);
+});
+for (const el of [$('#split-count'), $('#split-len')]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runSplit(); } });
+$('#split-go').addEventListener('click', runSplit);
+$('#split-cancel').addEventListener('click', () => (S.busy === 'split' ? cancelJob() : splitDlg.close()));
+$('#split-close').addEventListener('click', () => splitDlg.close());
+$('#split-reveal').addEventListener('click', () => SP.saved[0] && invoke('reveal', { path: SP.saved[0] }));
+// Don't let Esc or the X close it mid-split.
+splitDlg.addEventListener('cancel', (e) => { if (S.busy === 'split') e.preventDefault(); });
+$('#split-x').addEventListener('click', (e) => { if (S.busy === 'split') e.preventDefault(); });
+
 function watchKey(e, k, handled) {
   if (!speedMenu.hidden && k === 'Escape') { handled(); return closeSpeedMenu(); }
   if (S.quick) {
@@ -2085,6 +2168,7 @@ function watchKey(e, k, handled) {
     if (k === 'Home') { handled(); return seek(S.inT); }
     if (k === 'End') { handled(); return seek(S.outT); }
   } else if (k === 't' || k === 'T') return startQuickTrim();
+  else if (k === 'p' || k === 'P') return openSplit();
   if (k === 'f' || k === 'F') return toggleFullscreen();
   if (k === 'Escape' && isFullscreen()) return setFullscreen(false);
   if (k === ' ' || k === 'k' || k === 'K') { handled(); togglePlay(); }
@@ -2221,7 +2305,7 @@ $('#btn-open-empty').addEventListener('click', pickAndOpen);
 $('#btn-prev').addEventListener('click', () => gotoSibling(-1));
 $('#btn-next').addEventListener('click', () => gotoSibling(1));
 $('#btn-help').addEventListener('click', () => $('#help').showModal());
-$$('.tool').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+$('#e-help').addEventListener('click', () => $('#help').showModal());
 $('#btn-play').addEventListener('click', togglePlay);
 $('#btn-to-start').addEventListener('click', () => seek(S.inT));
 $('#btn-back5').addEventListener('click', () => seek(currentT() - 5));
@@ -2232,11 +2316,12 @@ $('#btn-fwd10').addEventListener('click', () => seek(currentT() + 10));
 // Hover time on the ruler / lanes
 track.addEventListener('pointermove', (e) => {
   const pill = $('#tl-hover');
-  if (!S.path || drag) return (pill.hidden = true);
+  if (!S.path || drag || e.target.closest('.tl-head')) return (pill.hidden = true);
   const x = e.clientX - strip.getBoundingClientRect().left;
+  if (x < 0) return (pill.hidden = true);
   pill.hidden = false;
-  pill.textContent = `${xToT(x).toFixed(2)}s`;
-  pill.style.left = `${clamp(x, 28, strip.clientWidth - 28)}px`;
+  pill.textContent = fmt(xToT(x));
+  pill.style.left = `${clamp(x, 28, strip.clientWidth - 28) + 8}px`; // the ruler has 8px padding
 });
 track.addEventListener('pointerleave', () => ($('#tl-hover').hidden = true));
 
@@ -2270,40 +2355,222 @@ $('#tl-scroll').addEventListener('pointerdown', (e) => {
   bar.addEventListener('pointerup', up);
 });
 
-$('#slow-add').addEventListener('click', addSlowAtPlayhead);
+// ---------------------------------------------------------------------------
+// Timeline rows: each effect's controls sit at the left of its lane
+// ---------------------------------------------------------------------------
+// Pop-up menu for the value pickers. items: { label, hint, on, run, extras: [{ icon, title, run }] },
+// { title }, '-', or { input: { label, value, placeholder, apply(text) -> false if invalid } }.
+let popMenu = null;
+function closeMenu() {
+  if (!popMenu) return;
+  popMenu.el.remove();
+  popMenu = null;
+}
+function openMenu(anchor, items) {
+  if (popMenu && popMenu.anchor === anchor) return closeMenu();
+  closeMenu();
+  const el = document.createElement('div');
+  el.className = 'menu pop';
+  for (const it of items) {
+    if (it === '-') { el.insertAdjacentHTML('beforeend', '<div class="sep"></div>'); continue; }
+    if (it.title) {
+      const d = document.createElement('div');
+      d.className = 'title';
+      d.textContent = it.title;
+      el.appendChild(d);
+      continue;
+    }
+    if (it.input) {
+      const l = document.createElement('label');
+      l.textContent = it.input.label;
+      const inp = document.createElement('input');
+      Object.assign(inp, { value: it.input.value ?? '', placeholder: it.input.placeholder || '', spellcheck: false, autocomplete: 'off' });
+      inp.addEventListener('input', () => inp.classList.remove('invalid'));
+      inp.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') closeMenu();
+        if (e.key !== 'Enter') return;
+        if (it.input.apply(inp.value) === false) inp.classList.add('invalid');
+        else closeMenu();
+      });
+      l.appendChild(inp);
+      el.appendChild(l);
+      continue;
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = it.on ? 'on' : '';
+    const label = document.createElement('span');
+    label.textContent = it.label;
+    b.appendChild(label);
+    if (it.on) b.insertAdjacentHTML('beforeend', icon('check'));
+    else if (it.hint) {
+      const k = document.createElement('span');
+      k.className = 'k';
+      k.textContent = it.hint;
+      b.appendChild(k);
+    }
+    b.addEventListener('click', () => { closeMenu(); it.run(); });
+    if (!it.extras) { el.appendChild(b); continue; }
+    const row = document.createElement('div');
+    row.className = 'item-row';
+    row.appendChild(b);
+    for (const x of it.extras) {
+      const m = document.createElement('button');
+      m.type = 'button';
+      m.className = 'mini';
+      m.title = x.title;
+      m.innerHTML = icon(x.icon);
+      m.addEventListener('click', x.run);
+      row.appendChild(m);
+    }
+    el.appendChild(row);
+  }
+  document.body.appendChild(el);
+  // Below the button if it fits, else above.
+  const r = anchor.getBoundingClientRect();
+  const below = r.bottom + 6 + el.offsetHeight <= innerHeight - 8;
+  el.style.top = `${below ? r.bottom + 6 : Math.max(8, r.top - 6 - el.offsetHeight)}px`;
+  el.style.left = `${clamp(r.left, 8, innerWidth - el.offsetWidth - 8)}px`;
+  popMenu = { el, anchor };
+}
+document.addEventListener('pointerdown', (e) => {
+  if (popMenu && !popMenu.el.contains(e.target) && !popMenu.anchor.contains(e.target)) closeMenu();
+});
+addEventListener('resize', closeMenu);
+
+const pct = (v) => (v < 0.001 ? 'Muted' : `${Math.round(v * 100)}%`);
+const parsePct = (text) => {
+  const v = Number(String(text).replace('%', '').trim()) / 100;
+  return isFinite(v) && v >= 0 && v <= 2 ? v : NaN;
+};
+const VOLUMES = [0, 0.5, 1, 1.5, 2];
+const volumeItems = (current, set) => [
+  ...VOLUMES.map((v) => ({ label: v === 0 ? 'Mute' : pct(v), on: Math.abs(current - v) < 1e-6, hint: v === 1 ? 'Original' : '', run: () => set(v) })),
+  '-',
+  { input: { label: 'Custom %', value: VOLUMES.some((v) => Math.abs(v - current) < 1e-6) ? '' : Math.round(current * 100), placeholder: '0–200',
+    apply: (t) => { const v = parsePct(t); if (!isFinite(v)) return false; set(v); } } },
+];
+
+/** Zoom centre in video pixels (what the X / Y fields show). */
+function zoomCenterPx(z) {
+  const k = 1 / z.amount;
+  return [Math.round((z.fx * (1 - k) + k / 2) * S.info.width), Math.round((z.fy * (1 - k) + k / 2) * S.info.height)];
+}
+
+function renderRows() {
+  const has = !!S.path;
+  $$('.tl-row[data-row]').forEach((r) => r.classList.toggle('focus', has && r.dataset.row === S.tool));
+  // Trim
+  if (document.activeElement !== $('#in-time')) $('#in-time').value = has ? fmt(S.inT) : '';
+  if (document.activeElement !== $('#out-time')) $('#out-time').value = has ? fmt(S.outT) : '';
+  $('#btn-reset-trim').hidden = !(has && (S.inT > 0.001 || S.outT < duration() - 0.001));
+  // Amplitude
+  const hasAudio = has && S.info.audioCount > 0;
+  $('#amp-pick').disabled = !hasAudio;
+  $('#amp-label').textContent = pct(S.origVolume);
+  $('#amp-hint').textContent = !has ? '' : !hasAudio ? 'This video has no sound' : S.origVolume > 1.001 ? 'Loud parts may distort' : '';
+  // Zoom: controls for the selected zoom
+  if (!selectedZoom() && S.zooms.length) {
+    const t = currentT();
+    S.selectedZoom = (S.zooms.find((z) => t >= z.start && t <= z.end) || S.zooms[0]).id;
+  }
+  const z = selectedZoom();
+  $('.tl-row[data-row="zoom"]').classList.toggle('is-on', !!z);
+  if (z) {
+    $('#zoom-label').textContent = `${fmtSpeed(z.amount)}×`;
+    const [x, y] = zoomCenterPx(z);
+    if (document.activeElement !== $('#zoom-x')) $('#zoom-x').value = x;
+    if (document.activeElement !== $('#zoom-y')) $('#zoom-y').value = y;
+  }
+  // Speed
+  $('.tl-row[data-row="slow"]').classList.toggle('is-on', S.slow.enabled);
+  $('#speed-label').textContent = `${fmtSpeed(S.slow.speed)}×`;
+  $('#speed-pick .muted').toggleAttribute('hidden', !S.slow.muteAudio); // SVG has no .hidden property
+  $('#speed-pick').title = `${describeSpeed(S.slow.speed)}. Click to change the speed or its sound`;
+  if (document.activeElement !== $('#slow-start')) $('#slow-start').value = fmt(S.slow.start);
+  if (document.activeElement !== $('#slow-end')) $('#slow-end').value = fmt(S.slow.end);
+  // Freeze
+  if (!selectedFreeze()) S.selectedFreeze = S.freezes[0]?.id ?? null;
+  const fz = selectedFreeze();
+  $('.tl-row[data-row="freeze"]').classList.toggle('is-on', !!fz);
+  if (fz) {
+    $('#freeze-label').textContent = `${fmtSpeed(fz.hold)}s`;
+    if (document.activeElement !== $('#freeze-at')) $('#freeze-at').value = fmt(fz.at);
+  }
+  // Sounds
+  const sel = S.sfx.find((x) => x.id === S.selectedSfx);
+  $('.tl-row[data-row="sound"]').classList.toggle('is-on', !!sel);
+  if (sel) {
+    $('#sfx-item-name').textContent = sel.name;
+    $('#sfx-vol-pick').title = `${sel.name} at ${fmt(sel.at)}. Click to change its volume`;
+    $('#sfx-vol-label').textContent = pct(sel.volume);
+  }
+}
+
+// Clicking a row's controls makes it the focused row (keys T M Z N A do the same).
+$$('.tl-row[data-row] .tl-head').forEach((h) => h.addEventListener('pointerdown', () => {
+  const row = h.closest('.tl-row').dataset.row;
+  if (S.path && S.tool !== row) setTool(row);
+}));
+
+// Trim
+bindTimeField($('#in-time'), (t) => setIn(t));
+bindTimeField($('#out-time'), (t) => setOut(t));
+$('#btn-reset-trim').addEventListener('click', () => { S.inT = 0; S.outT = duration(); afterTrimChange(); });
+// Amplitude
+$('#amp-pick').addEventListener('click', (e) => openMenu(e.currentTarget, volumeItems(S.origVolume, (v) => { S.origVolume = v; syncAll(); })));
+
+// Zoom
 $('#zoom-add').addEventListener('click', addZoomAtPlayhead);
 $('#zoom-add-another').addEventListener('click', addZoomAtPlayhead);
 $('#zoom-remove').addEventListener('click', () => S.selectedZoom && removeZoom(S.selectedZoom));
-$('#zoom-amounts').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.v;
+const ZOOMS = [1.25, 1.5, 2, 3];
+const EASES = [['smooth', 'Smooth', 'gentle'], ['quick', 'Quick', ''], ['snap', 'Snap', 'punch in']];
+$('#zoom-pick').addEventListener('click', (e) => {
   const z = selectedZoom();
-  if (!v || !z) return;
-  z.amount = Number(v);
-  syncAll();
+  if (!z) return;
+  const set = (patch) => { Object.assign(z, patch); S.tool = 'zoom'; syncAll(); };
+  openMenu(e.currentTarget, [
+    { title: 'Zoom in' },
+    ...ZOOMS.map((v) => ({ label: `${v}×`, on: z.amount === v, run: () => set({ amount: v }) })),
+    { input: { label: 'Custom ×', value: ZOOMS.includes(z.amount) ? '' : fmtSpeed(z.amount), placeholder: '1.1–8',
+      apply: (t) => { const v = parseSpeed(t); if (!(v >= 1.05 && v <= 8)) return false; set({ amount: Math.round(v * 100) / 100 }); } } },
+    '-',
+    { title: 'Ease' },
+    ...EASES.map(([v, label, hint]) => ({ label, hint, on: z.ease === v, run: () => set({ ease: v }) })),
+  ]);
 });
-$('#zoom-eases').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.v;
-  const z = selectedZoom();
-  if (!v || !z) return;
-  z.ease = v;
-  syncAll();
-});
-$('#btn-set-in').addEventListener('click', () => setIn(currentT()));
-$('#btn-set-out').addEventListener('click', () => setOut(currentT()));
-$('#btn-reset-trim').addEventListener('click', () => { S.inT = 0; S.outT = duration(); afterTrimChange(); });
-$('#amp-presets').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.v;
-  if (v == null) return;
-  S.origVolume = Number(v);
-  syncAll();
-});
-$('#split-add').addEventListener('click', () => setSplitCount(S.split.count));
-$('#adv-toggle').addEventListener('click', (e) => {
-  const adv = $('#advanced');
-  adv.hidden = !adv.hidden;
-  e.currentTarget.classList.toggle('open', !adv.hidden);
-});
-// Speed multiplier: type any value from 0.1× to 16× ("2", "0.25", "1/4", "3x").
+/** X / Y: move the zoom's centre to a pixel of the video. */
+function bindZoomAxis(el, axis) {
+  const commit = () => {
+    const z = selectedZoom();
+    const v = Number(el.value);
+    if (z && isFinite(v)) {
+      const [x, y] = zoomCenterPx(z);
+      const W = S.info.width;
+      const H = S.info.height;
+      aimAt(z, (axis === 'x' ? v : x) / W, (axis === 'y' ? v : y) / H);
+      renderZoomBox();
+      updateExportInfo();
+    }
+    syncAll();
+  };
+  el.addEventListener('change', commit);
+  el.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Escape') { if (e.key === 'Escape') el.value = ''; el.blur(); if (e.key === 'Escape') syncAll(); }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      el.value = Math.round(Number(el.value) || 0) + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
+      commit();
+    }
+  });
+}
+bindZoomAxis($('#zoom-x'), 'x');
+bindZoomAxis($('#zoom-y'), 'y');
+
+// Speed multiplier: any value from 0.1× to 16× ("2", "0.25", "1/4", "3x").
 const SPEED_MIN = 0.1;
 const SPEED_MAX = 16;
 function parseSpeed(text) {
@@ -2316,72 +2583,112 @@ function setSpeed(v) {
   S.slow.speed = Math.round(clamp(v, SPEED_MIN, SPEED_MAX) * 1000) / 1000;
   syncAll();
 }
-const speedInput = $('#speed-input');
-speedInput.addEventListener('input', () => {
-  const v = parseSpeed(speedInput.value);
-  const ok = isFinite(v) && v >= SPEED_MIN && v <= SPEED_MAX;
-  speedInput.parentElement.classList.toggle('invalid', !ok && speedInput.value.trim() !== '');
-  speedInput.parentElement.title = ok ? '' : `Enter a number from ${SPEED_MIN} to ${SPEED_MAX}`;
-  if (ok) { S.slow.speed = Math.round(v * 1000) / 1000; $('#speed-desc').textContent = describeSpeed(S.slow.speed); renderTimeline(); updateExportInfo(); }
+const SPEEDS = [0.25, 0.5, 0.75, 1.5, 2, 4];
+$('#slow-add').addEventListener('click', addSlowAtPlayhead);
+$('#slow-remove').addEventListener('click', () => { S.slow.enabled = false; syncAll(); });
+$('#speed-pick').addEventListener('click', (e) => openMenu(e.currentTarget, [
+  { title: 'Speed' },
+  ...SPEEDS.map((v) => ({ label: `${v}×`, hint: describeSpeed(v), on: Math.abs(S.slow.speed - v) < 1e-6, run: () => setSpeed(v) })),
+  { input: { label: 'Custom ×', value: SPEEDS.some((v) => Math.abs(S.slow.speed - v) < 1e-6) ? '' : fmtSpeed(S.slow.speed), placeholder: '0.1–16',
+    apply: (t) => { const v = parseSpeed(t); if (!(v >= SPEED_MIN && v <= SPEED_MAX)) return false; setSpeed(v); } } },
+  '-',
+  { title: 'Sound' },
+  { label: 'Keep', hint: 'natural pitch', on: !S.slow.muteAudio, run: () => { S.slow.muteAudio = false; syncAll(); } },
+  { label: 'Mute', on: S.slow.muteAudio, run: () => { S.slow.muteAudio = true; syncAll(); } },
+]));
+bindTimeField($('#slow-start'), (t) => {
+  S.slow.start = clamp(t, 0, S.slow.end - 0.1);
+  syncAll();
 });
-speedInput.addEventListener('change', () => {
-  const v = parseSpeed(speedInput.value);
-  speedInput.parentElement.classList.remove('invalid');
-  if (isFinite(v)) setSpeed(v);
-  else syncAll(); // put the last good value back
-});
-speedInput.addEventListener('keydown', (e) => {
-  e.stopPropagation();
-  if (e.key === 'Enter' || e.key === 'Escape') { if (e.key === 'Escape') speedInput.value = fmtSpeed(S.slow.speed); speedInput.blur(); }
-  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    e.preventDefault();
-    // Nudge in steps that feel even: 0.05 below 1×, 0.25 up to 4×, 1 above.
-    const s = S.slow.speed;
-    const up = e.key === 'ArrowUp';
-    const step = (up ? s >= 4 : s > 4) ? 1 : (up ? s >= 1 : s > 1) ? 0.25 : 0.05;
-    setSpeed(Math.round((s + (up ? step : -step)) / step) * step);
-    speedInput.value = fmtSpeed(S.slow.speed);
-  }
-});
-$('#slow-audio').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.v;
-  if (v) { S.slow.muteAudio = v === 'mute'; syncAll(); }
-});
-$('#slow-remove').addEventListener('click', () => {
-  S.slow.enabled = false;
+bindTimeField($('#slow-end'), (t) => {
+  S.slow.end = clamp(t, S.slow.start + 0.1, duration());
   syncAll();
 });
 
-$('#btn-add-sounds').addEventListener('click', async () => addToLibrary(await invoke('pick_sounds')));
-$('#orig-volume').addEventListener('input', (e) => {
-  S.origVolume = Number(e.target.value);
+// Freeze frames: hold one frame for a few seconds, then carry on (adds time; silent while held)
+function addFreezeAtPlayhead() {
+  if (!S.path) return;
+  const f1 = 1 / fps();
+  const at = clamp(Math.floor(currentT() * fps() + 1e-6) / fps(), S.inT, Math.max(S.inT, S.outT - f1));
+  let f = S.freezes.find((x) => Math.abs(x.at - at) < f1 / 2);
+  if (!f) {
+    f = { id: uid(), at, hold: Number(settings.freezeHold) > 0 ? Number(settings.freezeHold) : 2 };
+    S.freezes.push(f);
+    S.freezes.sort((a, b) => a.at - b.at);
+  }
+  S.selectedFreeze = f.id;
+  S.tool = 'freeze';
+  video.pause();
+  syncAll();
+}
+function removeFreeze(id) {
+  S.freezes = S.freezes.filter((f) => f.id !== id);
+  if (S.selectedFreeze === id) S.selectedFreeze = null;
+  syncAll();
+}
+function selectedFreeze() { return S.freezes.find((f) => f.id === S.selectedFreeze) || null; }
+$('#freeze-add').addEventListener('click', addFreezeAtPlayhead);
+$('#freeze-add-another').addEventListener('click', addFreezeAtPlayhead);
+$('#freeze-remove').addEventListener('click', () => S.selectedFreeze && removeFreeze(S.selectedFreeze));
+const HOLDS = [0.5, 1, 2, 3, 5];
+$('#freeze-pick').addEventListener('click', (e) => {
+  const f = selectedFreeze();
+  if (!f) return;
+  const set = (v) => {
+    f.hold = Math.round(clamp(v, 0.1, 60) * 100) / 100;
+    settings.freezeHold = f.hold; // the next freeze starts with the same hold
+    saveSettings();
+    S.tool = 'freeze';
+    syncAll();
+  };
+  openMenu(e.currentTarget, [
+    { title: 'Hold the frame for' },
+    ...HOLDS.map((v) => ({ label: `${v}s`, on: Math.abs(f.hold - v) < 1e-6, run: () => set(v) })),
+    { input: { label: 'Seconds', value: HOLDS.includes(f.hold) ? '' : fmtSpeed(f.hold), placeholder: '0.1–60',
+      apply: (t) => { const v = /^\s*\d*\.?\d+\s*$/.test(t) ? Number(t) : parseDuration(t); if (!(v >= 0.1 && v <= 60)) return false; set(v); } } },
+  ]);
+});
+bindTimeField($('#freeze-at'), (t) => {
+  const f = selectedFreeze();
+  if (!f) return syncAll();
+  f.at = clamp(Math.floor(t * fps() + 1e-6) / fps(), S.inT, Math.max(S.inT, S.outT - 1 / fps()));
+  S.freezes.sort((a, b) => a.at - b.at);
+  video.pause();
+  seek(f.at + 0.5 / fps());
   syncAll();
 });
-$('#sfx-item-volume').addEventListener('input', (e) => {
+
+// Sounds: the library lives in the Add menu (1–9 drop one at the playhead)
+function openSoundMenu(anchor) {
+  const items = library.map((item, i) => ({
+    label: item.name,
+    hint: i < 9 ? String(i + 1) : '',
+    run: () => placeSound(item),
+    extras: [
+      { icon: 'play', title: 'Listen', run: () => previewLibrarySound(item) },
+      { icon: 'x', title: 'Remove from this list', run: () => {
+        library = library.filter((l) => l.id !== item.id);
+        saveLibrary();
+        closeMenu();
+        openSoundMenu(anchor);
+      } },
+    ],
+  }));
+  if (!items.length) items.push({ title: 'No sounds yet. Add your own MP3 or WAV files' });
+  items.push('-', { label: 'Choose sound files…', run: async () => addToLibrary(await invoke('pick_sounds')) });
+  openMenu(anchor, items);
+}
+$('#sfx-add').addEventListener('click', (e) => openSoundMenu(e.currentTarget));
+$('#sfx-vol-pick').addEventListener('click', (e) => {
   const s = S.sfx.find((x) => x.id === S.selectedSfx);
-  if (!s) return;
-  s.volume = Number(e.target.value);
-  syncAll();
+  if (s) openMenu(e.currentTarget, volumeItems(s.volume, (v) => { s.volume = v; syncAll(); }));
 });
 $('#sfx-item-remove').addEventListener('click', () => S.selectedSfx && removeSfx(S.selectedSfx));
 
-const stepSplit = (d) => {
-  if (S.split.enabled) return setSplitCount(S.split.count + d);
-  S.split.count = clamp(S.split.count + d, 2, 99);
-  syncAll();
-};
-$('#split-minus').addEventListener('click', () => stepSplit(-1));
-$('#split-plus').addEventListener('click', () => stepSplit(1));
-$('#split-count').addEventListener('change', (e) => {
-  const n = Number(e.target.value);
-  if (S.split.enabled) setSplitCount(n);
-  else { S.split.count = clamp(Math.round(n) || 2, 2, 99); syncAll(); }
-});
-$('#split-count').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
-$('#split-even').addEventListener('click', () => resetSplit());
-$('#split-remove').addEventListener('click', () => {
-  S.split.enabled = false;
-  syncAll();
+$('#adv-toggle').addEventListener('click', (e) => {
+  const adv = $('#advanced');
+  adv.hidden = !adv.hidden;
+  e.currentTarget.classList.toggle('open', !adv.hidden);
 });
 
 // Export sheet
@@ -2412,7 +2719,6 @@ $('#save-folder-change').addEventListener('click', async () => {
 $('#save-folder-reset').addEventListener('click', () => { settings.outDir = ''; saveSettings(); updateExportInfo(); });
 $('#exact').addEventListener('change', (e) => {
   S.exact = e.target.checked;
-  if (S.split.enabled) snapSplitPoints();
   syncAll();
 });
 $('#set-quality').addEventListener('change', (e) => { settings.quality = e.target.value; saveSettings(); updateExportInfo(); });
@@ -2426,6 +2732,7 @@ document.addEventListener('keydown', (e) => {
   const typing = tag === 'input' && !['range', 'checkbox'].includes(e.target.type);
   const ctrl = e.ctrlKey || e.metaKey;
   if (document.querySelector('dialog[open]')) return;
+  if (popMenu && e.key === 'Escape') { e.preventDefault(); return closeMenu(); }
 
   if (ctrl && (e.key === 's' || e.key === 'e')) { e.preventDefault(); if (S.mode !== 'edit') setMode('edit'); return doExport(); }
   if (ctrl && e.key === 'o') { e.preventDefault(); return pickAndOpen(); }
@@ -2448,15 +2755,17 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'End') { handled(); seek(S.outT); }
   else if (k === 'x' || k === 'X') { S.inT = 0; S.outT = duration(); afterTrimChange(); }
   else if (k === 's' || k === 'S') addSlowAtPlayhead();
+  else if (k === 'h' || k === 'H') addFreezeAtPlayhead();
   else if (k === 't' || k === 'T') setTool('trim');
   else if (k === 'm' || k === 'M') setTool('slow');
   else if (k === 'n' || k === 'N') setTool('sound');
   else if (k === 'a' || k === 'A') setTool('amp');
-  else if (k === 'p' || k === 'P') setTool('split');
+  else if (k === 'p' || k === 'P') openSplit();
   else if (k === 'PageUp') { handled(); gotoSibling(-1); }
   else if (k === 'PageDown') { handled(); gotoSibling(1); }
   else if (k === 'Delete' || k === 'Backspace') {
-    if (S.tool === 'zoom' && S.selectedZoom) removeZoom(S.selectedZoom);
+    if (S.tool === 'freeze' && S.selectedFreeze) removeFreeze(S.selectedFreeze);
+    else if (S.tool === 'zoom' && S.selectedZoom) removeZoom(S.selectedZoom);
     else if (S.selectedSfx) removeSfx(S.selectedSfx);
   }
   else if (k === 'f' || k === 'F') zoomToSelection();
@@ -2488,6 +2797,5 @@ T.webview.getCurrentWebview().onDragDropEvent(async (e) => {
 });
 
 // Startup
-renderLibrary();
 syncAll();
 invoke('startup_file').then((p) => p && openVideo(p));

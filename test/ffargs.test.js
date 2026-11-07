@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   parseProbe, planExport, buildExportArgs, pickEncoder, snapToKeyframe, atempoChain,
-  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt,
+  evenSplitPoints, nearestKeyframe, partsFromPoints, zoomAt, parseDuration, fixedSplitPoints,
   buildProxyArgs, ENCODER_CANDIDATES, parseTime, formatTime,
 } from '../src/ffargs.js';
 
@@ -20,6 +20,17 @@ const check = (name, cond, extra = '') => {
   if (!cond) failures++;
 };
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
+
+// Split dialog: typed lengths and fixed-length parts
+{
+  const cases = [['2h', 7200], ['1h30m', 5400], ['45m', 2700], ['90s', 90], ['1.5h', 5400], ['1:30:00', 5400], ['30:00', 1800], ['10', 600], ['2 hours', 7200], ['abc', NaN], ['', NaN], ['5x', NaN]];
+  const bad = cases.filter(([s, v]) => !(Number.isNaN(v) ? Number.isNaN(parseDuration(s)) : parseDuration(s) === v));
+  check('parseDuration: 2h, 1h30m, 45m, 90s, 1:30:00, plain minutes, rejects junk', !bad.length, bad.map(([s]) => s).join(','));
+  const pts = fixedSplitPoints(0, 9660, 7200); // 2:41:00 in 2-hour parts
+  check('fixedSplitPoints: 2:41:00 in 2 h parts -> 2 parts, last 41 min', pts.length === 1 && pts[0] === 7200 && partsFromPoints(0, 9660, pts).at(-1).outT - 7200 === 2460);
+  check('fixedSplitPoints: no sliver at the end', fixedSplitPoints(0, 600.2, 300).length === 1);
+  check('fixedSplitPoints: length >= video -> one part', fixedSplitPoints(0, 100, 100).length === 0);
+}
 
 const probe = (f) => {
   const j = execFileSync('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', f]).toString();
@@ -203,6 +214,9 @@ for (const ext of ['mp4', 'mkv']) {
     ['sfx', { inT: 3.5, outT: 8, keyframeIn: kIn, sfx: [{ path: path.join(dir, 'boom.wav'), at: 5, volume: 1 }], origVolume: 0 }, 5 - kIn],
     ['slow', { inT: 3.5, outT: 8, slow: { enabled: true, start: 4, end: 6, speed: 0.5 }, sfx: [], origVolume: 1 }, 0.5 + 1 / 0.5],
     ['slow-sfx', { inT: 3.5, outT: 8, slow: { enabled: true, start: 4, end: 6, speed: 0.5 }, sfx: [{ path: path.join(dir, 'boom.wav'), at: 5, volume: 1 }], origVolume: 0 }, 0.5 + 1 / 0.5],
+    // A 2s freeze at 4.5 pushes the flash and the beep 2s later, together.
+    ['freeze', { inT: 3.5, outT: 8, freezes: [{ at: 4.5, hold: 2 }], sfx: [], origVolume: 1 }, 1.5 + 2],
+    ['freeze-slow-sfx', { inT: 3.5, outT: 8, freezes: [{ at: 4.2, hold: 1 }], slow: { enabled: true, start: 4, end: 6, speed: 0.5 }, sfx: [{ path: path.join(dir, 'boom.wav'), at: 5, volume: 1 }], origVolume: 0 }, 0.5 + 1 / 0.5 + 1],
   ];
   for (const [name, edit, expected] of cases) {
     const r = run(`sync-${ext}-${name}`, `sync.${ext}`, edit);
@@ -282,6 +296,28 @@ const psnr = (a, b) => {
   const m = /average:([\d.inf]+)/.exec(r.stderr || '');
   return m ? (m[1] === 'inf' ? 99 : Number(m[1])) : 0;
 };
+// 10b. Freeze frame: src.mp4 has a frame counter burned in, so the held picture can be checked exactly.
+{
+  const r = run('freeze', 'src.mp4', { inT: 4, outT: 8, freezes: [{ at: 5, hold: 1.5 }], sfx: [], origVolume: 1 });
+  if (r) {
+    check('freeze: re-encoded because of the freeze', r.plan.mode === 'reencode' && r.plan.reasons.includes('freeze frame'));
+    const vd = streamDur(r.res.raw, 'video');
+    const ad = streamDur(r.res.raw, 'audio');
+    check('freeze: 4s + 1.5s hold = 5.5s, sound as long as picture', near(vd, 5.5, 0.05) && near(ad, 5.5, 0.06), `video ${vd} audio ${ad}`);
+    const grab = (file, at, name) => { const p = path.join(out, `freeze-${name}.png`); execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', String(at), '-i', file, '-frames:v', '1', p]); return p; };
+    const src = path.join(dir, 'src.mp4');
+    const held = grab(src, 5, 'src-5.000');
+    const next = grab(src, 5 + 1 / 60, 'src-5.017');
+    const h1 = grab(r.outPath, 1.1, 'out-1.1');
+    const h2 = grab(r.outPath, 2.4, 'out-2.4');
+    const after = grab(r.outPath, 3.0, 'out-3.0');
+    const s55 = grab(src, 5.5, 'src-5.500');
+    check('freeze: the held picture is exactly the chosen frame (start and end of the hold)', psnr(h1, held) > 40 && psnr(h2, held) > 40 && psnr(h1, next) < psnr(h1, held) - 3,
+      `${psnr(h1, held).toFixed(1)} / ${psnr(h2, held).toFixed(1)} dB vs the frame, ${psnr(h1, next).toFixed(1)} dB vs the next frame`);
+    check('freeze: playback resumes from that frame afterwards (out 3.0 = source 5.5)', psnr(after, s55) > 35, `${psnr(after, s55).toFixed(1)}dB`);
+  }
+}
+
 {
   const r = run('zoom', 'src.mp4', { inT: 2, outT: 8, zooms: [zoom2x], sfx: [], origVolume: 1 });
   if (r) {

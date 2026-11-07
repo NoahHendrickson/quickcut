@@ -8,10 +8,11 @@ A small, fast Windows video editor for clips: trim, split, speed (slow-mo or spe
 
 ## Two modes
 
-A slim header shows the file name and its details; the video fills the rest, with one bar of controls underneath: play, frame steps, ±5 / ±10 s, volume, the seek bar, **Loop** (turns yellow, then drag its two yellow ends on the seek bar), playback speed, **Edit**, **Trim** and full screen (or press F, or double-click the video).
+The file name and its details are in the window's title bar, so the video fills the window, with one bar of controls underneath: play, frame steps, ±5 / ±10 s, volume, the seek bar, **Loop** (turns yellow, then drag its two yellow ends on the seek bar), playback speed, **Edit**, **Trim** and full screen (or press F, or double-click the video).
 
 - **Watch**: a clean player for investigating clips. Step frame by frame (hold ← → to keep going), play at any speed from 0.1× to 16×, loop an A–B section, and scroll on the video to zoom into the picture. **Trim** right from the player: drag the two handles on the seek bar, play the selection to check it, and save. It's lossless by default, with an optional exact start.
-- **Edit**: trim, speed changes, zoom effects, sound effects, volume, splitting and export. Switching from Watch with an A–B loop set starts your trim on that loop.
+- **Split** (or press P): turn one video into several. Choose a number of equal parts, or a length per part (`2h`, `30m`, `1:30:00`; the last part gets what's left). The dialog lists every part, then saves them as new videos next to the original, losslessly.
+- **Edit**: one row per effect: Trim, Amplitude, Zoom, Speed, Freeze (hold a frame for a few seconds, then carry on; press H) and Sounds. Each row shows its controls on the left (exact times, amounts, the zoom centre in pixels…) lined up with its lane on the timeline, where you can also drag things directly. Switching from Watch with a loop set starts your trim on that loop.
 
 ## Install
 
@@ -19,7 +20,7 @@ A slim header shows the file name and its details; the video fills the rest, wit
 2. Windows SmartScreen may say "Windows protected your PC" because the app isn't code-signed with a paid certificate: click **More info → Run anyway**.
 3. On first launch QuickCut downloads its video engine (ffmpeg, 78 MB, checksum-verified) once.
 
-QuickCut checks for updates when it starts. When there's a new version, an **Update** button appears in the header: one click downloads, installs and restarts. Updates are signed; the app refuses any update not signed with the project's key.
+QuickCut checks for updates when it starts. When there's a new version, an **Update** button appears in the player bar: one click downloads, installs and restarts. Updates are signed; the app refuses any update not signed with the project's key.
 
 ## Quality
 
@@ -27,7 +28,7 @@ QuickCut checks for updates when it starts. When there's a new version, an **Upd
 |---|---|---|
 | Trim / split | Video and audio stream-copied | Bit-for-bit identical |
 | Sound effects / volume | Video copied, audio remixed | Video untouched |
-| Speed change (slow-mo or speed-up) / zoom / exact start | Re-encoded on your GPU (NVIDIA/AMD/Intel) or CPU | Visually lossless; 10-bit/HDR stays 10-bit |
+| Speed change (slow-mo or speed-up) / zoom / freeze frame / exact start | Re-encoded on your GPU (NVIDIA/AMD/Intel) or CPU | Visually lossless; 10-bit/HDR stays 10-bit |
 
 ## Development
 

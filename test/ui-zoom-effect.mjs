@@ -175,13 +175,14 @@ const info = () => page.evaluate(() => ({
 await drop('/tmp/qc-test/src.mp4');
 await page.waitForFunction(() => document.querySelectorAll('#tl-thumbs > div').length > 0, null, { timeout: 30000 });
 await seekTo(5);
-await page.click('.tool[data-tool="zoom"]');
+await page.click('.tl-row[data-row="zoom"] .tl-label');
 await page.waitForTimeout(200);
 await shot('30-zoom-tool');
 await page.click('#zoom-add');
 await page.waitForTimeout(300);
 console.log('added', JSON.stringify(await info()));
-await page.click('#zoom-amounts button[data-v="2"]');
+await page.click('#zoom-pick'); await page.waitForTimeout(120);
+await page.evaluate(() => [...document.querySelectorAll('.menu.pop button')].find((b) => b.firstElementChild?.textContent === '2×').click());
 // Aim: drag the box toward the top-right of the video
 const vf = await page.locator('#vframe').boundingBox();
 const bx = await page.locator('#zoom-box').boundingBox();
@@ -193,7 +194,7 @@ await page.waitForTimeout(200);
 console.log('aimed', JSON.stringify(await info()));
 await shot('31-zoom-aim');
 // Preview: switch to another tool -> preview shows the zoom applied at the playhead
-await page.click('.tool[data-tool="trim"]');
+await page.click('.tl-row[data-row="trim"] .tl-label');
 await seekTo(6.5);
 await page.waitForTimeout(300);
 console.log('preview mid-zoom', JSON.stringify(await info()));

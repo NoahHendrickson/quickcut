@@ -167,7 +167,19 @@ const drop = (p) => page.evaluate((p) => window.__dropHandler({ payload: { type:
 const seekTo = async (t) => { await page.evaluate((t) => { document.querySelector('#video').currentTime = t; }, t); await page.waitForTimeout(450); };
 const stripBox = async () => page.locator('#tl-strip').boundingBox();
 const xAt = async (t, dur) => { const b = await stripBox(); return b.x + (t / dur) * b.width; };
-const tool = (name) => page.click(`.tool[data-tool="${name}"]`);
+const tool = (name) => page.click(`.tl-row[data-row="${name === 'split' ? 'trim' : name}"] .tl-label`);
+// Row controls: pick a value from a row's menu, or type into its custom field.
+const menuPick = async (anchor, label) => {
+  await page.click(anchor); await page.waitForTimeout(120);
+  await page.evaluate((label) => [...document.querySelectorAll('.menu.pop button')].find((b) => b.firstElementChild?.textContent === label).click(), label);
+  await page.waitForTimeout(150);
+};
+const menuType = async (anchor, value) => {
+  await page.click(anchor); await page.waitForTimeout(120);
+  await page.fill('.menu.pop input', value); await page.press('.menu.pop input', 'Enter');
+  await page.waitForTimeout(150);
+};
+
 const dragHandle = async (sel, toX, hold) => {
   const h = await page.locator(sel).boundingBox();
   await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
@@ -178,7 +190,7 @@ const dragHandle = async (sel, toX, hold) => {
   await page.waitForTimeout(300);
 };
 const state = () => page.evaluate(() => ({
-  tool: document.querySelector('.tool.active')?.dataset.tool,
+  tool: document.querySelector('.tl-row.focus')?.dataset.row,
   in: document.querySelector('#in-time').value, out: document.querySelector('#out-time').value,
   btn: document.querySelector('#btn-export-label').textContent,
   popups: document.querySelectorAll('.pop').length,
@@ -204,22 +216,22 @@ await shot('02-trim');
 
 // Sound
 await tool('sound');
-await page.click('#btn-add-sounds');
+await menuPick('#sfx-add', 'Choose sound files…');
 await page.waitForTimeout(400);
 await seekTo(8.6);
-await page.click('#sfx-library .sfx-chip:nth-child(1) .name');
+await page.click('#sfx-add'); await page.click('.menu.pop .item-row:nth-child(1) > button');
 await seekTo(13);
-await page.click('#sfx-library .sfx-chip:nth-child(2) .name');
+await page.click('#sfx-add'); await page.click('.menu.pop .item-row:nth-child(2) > button');
 await page.waitForTimeout(500);
 await shot('03-sound');
 await log('sound');
 
 // Amplitude
 await tool('amp');
-await page.click('#amp-presets button[data-v="1.5"]');
+await menuPick('#amp-pick', '150%');
 await page.waitForTimeout(400);
 await shot('04-amplitude');
-await page.click('#amp-presets button[data-v="1"]');
+await menuPick('#amp-pick', '100%');
 
 // Slow-mo
 await tool('slow');
@@ -227,7 +239,7 @@ await page.waitForTimeout(200);
 await shot('05-slow-off');
 await seekTo(9);
 await page.click('#slow-add');
-await page.fill('#speed-input', '0.25'); await page.press('#speed-input', 'Enter');
+await menuType('#speed-pick', '0.25');
 await page.waitForTimeout(300);
 await shot('06-slow');
 await log('slow');
@@ -249,12 +261,13 @@ console.log('result:', (await page.textContent('#export-result')).replace(/\s+/g
 await drop('/tmp/qc-test/work.mp4');
 await page.waitForFunction(() => document.title.startsWith('work') && document.querySelectorAll('#tl-thumbs > div').length > 0, null, { timeout: 30000 });
 await seekTo(6.5);
-await tool('split');
-await page.click('#split-add');
-await page.waitForTimeout(900);
+// Split now lives in a dialog (P works in Edit too)
+await page.keyboard.press('p');
+await page.waitForFunction(() => document.querySelector('#split').open && !/Finding/.test(document.querySelector('#split-note').textContent), null, { timeout: 20000 });
 await shot('10-split');
-console.log('split markers:', await page.$$eval('.split-marker', (m) => m.length), (await state()).btn);
-await page.click('#split-remove');
+console.log('split dialog parts:', await page.$$eval('#split-list li', (l) => l.length), await page.textContent('#split-go'));
+await page.keyboard.press('Escape');
+await page.waitForTimeout(150);
 
 // Replace original with inline confirmation
 const before = md5('/tmp/qc-test/work.mp4');
