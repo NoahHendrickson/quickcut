@@ -250,8 +250,7 @@
           <div class="tl-row" data-row="trim">
             <div class="tl-head">
                 <span class="tl-label">Trim</span>
-                <label class="pill" title="Start of the video you keep (I sets it to the playhead)"><span class="k">Start</span><input id="in-time" spellcheck="false" autocomplete="off" /></label>
-                <label class="pill" title="End of the video you keep (O sets it to the playhead)"><span class="k">End</span><input id="out-time" spellcheck="false" autocomplete="off" /></label>
+                <div class="pill range"><input id="in-time" title="Start of the video you keep (I sets it to the playhead)" aria-label="Trim start" spellcheck="false" autocomplete="off" /><span class="to">–</span><input id="out-time" title="End of the video you keep (O sets it to the playhead)" aria-label="Trim end" spellcheck="false" autocomplete="off" /></div>
                 <button class="mini" id="btn-reset-trim" title="Keep the whole video (X)"><svg><use href="#i-reset"/></svg></button>
             </div>
             <div class="lane" id="lane-video">
@@ -285,13 +284,12 @@
               <span class="tl-label">Zoom</span>
               <div class="when-on">
                 <button class="pill pick" id="zoom-pick" title="How far to zoom in, and how it eases"><span id="zoom-label">1.5×</span><svg class="caret"><use href="#i-chev-down"/></svg></button>
-                <label class="pill" title="Centre of the zoom, in video pixels from the left (or drag the box on the video)"><span class="k">X</span><input id="zoom-x" inputmode="numeric" spellcheck="false" autocomplete="off" /></label>
-                <label class="pill" title="Centre of the zoom, in video pixels from the top"><span class="k">Y</span><input id="zoom-y" inputmode="numeric" spellcheck="false" autocomplete="off" /></label>
+                <div class="pill xy" title="Centre of the zoom, in video pixels from the left (X) and top (Y). Or drag the box on the video"><span class="k">X</span><input id="zoom-x" aria-label="Zoom centre X" inputmode="numeric" spellcheck="false" autocomplete="off" /><span class="k">Y</span><input id="zoom-y" aria-label="Zoom centre Y" inputmode="numeric" spellcheck="false" autocomplete="off" /></div>
                 <button class="mini" id="zoom-add-another" title="Add another zoom at the playhead"><svg><use href="#i-plus"/></svg></button>
                 <button class="mini danger" id="zoom-remove" title="Remove this zoom (Delete)"><svg><use href="#i-delete"/></svg></button>
               </div>
               <div class="when-off">
-                <button class="pill btnish" id="zoom-add"><svg><use href="#i-plus"/></svg>Add at playhead</button>
+                <button class="pill btnish ghost" id="zoom-add" title="Zoom in on part of the video, from the playhead"><svg><use href="#i-plus"/></svg>Add at playhead</button>
               </div>
             </div>
             <div class="lane" id="lane-zoom"><div id="tl-zooms"></div></div>
@@ -302,12 +300,11 @@
               <span class="tl-label">Speed</span>
               <div class="when-on">
                 <button class="pill pick" id="speed-pick" title="Speed of this section (0.1× to 16×) and its sound"><span id="speed-label">0.5×</span><svg class="muted" hidden><use href="#i-mute"/></svg><svg class="caret"><use href="#i-chev-down"/></svg></button>
-                <label class="pill"><span class="k">Start</span><input id="slow-start" spellcheck="false" autocomplete="off" /></label>
-                <label class="pill"><span class="k">Stop</span><input id="slow-end" spellcheck="false" autocomplete="off" /></label>
+                <div class="pill range"><input id="slow-start" title="Where the speed change starts" aria-label="Speed change start" spellcheck="false" autocomplete="off" /><span class="to">–</span><input id="slow-end" title="Where the speed change ends" aria-label="Speed change end" spellcheck="false" autocomplete="off" /></div>
                 <button class="mini danger" id="slow-remove" title="Remove the speed change"><svg><use href="#i-delete"/></svg></button>
               </div>
               <div class="when-off">
-                <button class="pill btnish" id="slow-add" title="Slow motion or speed-up from the playhead (S)"><svg><use href="#i-plus"/></svg>Add at playhead</button>
+                <button class="pill btnish ghost" id="slow-add" title="Slow motion or speed-up from the playhead (S)"><svg><use href="#i-plus"/></svg>Add at playhead</button>
               </div>
             </div>
             <div class="lane" id="lane-fx">
@@ -320,12 +317,12 @@
               <span class="tl-label">Freeze</span>
               <div class="when-on">
                 <button class="pill pick" id="freeze-pick" title="How long to hold the frame"><span class="k">Hold</span><span id="freeze-label">2s</span><svg class="caret"><use href="#i-chev-down"/></svg></button>
-                <label class="pill" title="The frame to hold. Or drag it on the timeline"><span class="k">At</span><input id="freeze-at" spellcheck="false" autocomplete="off" /></label>
+                <label class="pill" title="The frame to hold. Or drag it on the timeline"><input id="freeze-at" aria-label="Frame to hold" spellcheck="false" autocomplete="off" /></label>
                 <button class="mini" id="freeze-add-another" title="Freeze another frame at the playhead (H)"><svg><use href="#i-plus"/></svg></button>
                 <button class="mini danger" id="freeze-remove" title="Remove this freeze (Delete)"><svg><use href="#i-delete"/></svg></button>
               </div>
               <div class="when-off">
-                <button class="pill btnish" id="freeze-add" title="Hold the frame at the playhead, then carry on (H)"><svg><use href="#i-plus"/></svg>Freeze at playhead</button>
+                <button class="pill btnish ghost" id="freeze-add" title="Hold the frame at the playhead, then carry on (H)"><svg><use href="#i-plus"/></svg>Add at playhead</button>
               </div>
             </div>
             <div class="lane" id="lane-freeze"><div id="tl-freezes"></div></div>
@@ -334,7 +331,7 @@
           <div class="tl-row" data-row="sound">
             <div class="tl-head">
               <span class="tl-label">Sounds</span>
-              <button class="pill pick" id="sfx-add" title="Drop a sound effect at the playhead (1–9)"><svg><use href="#i-plus"/></svg>Add<svg class="caret"><use href="#i-chev-down"/></svg></button>
+              <button class="pill pick ghost" id="sfx-add" title="Drop a sound effect at the playhead (1–9)"><svg><use href="#i-plus"/></svg>Add<svg class="caret"><use href="#i-chev-down"/></svg></button>
               <div class="when-on">
                 <button class="pill pick" id="sfx-vol-pick" title="Volume of the selected sound"><span class="k" id="sfx-item-name"></span><span id="sfx-vol-label">100%</span><svg class="caret"><use href="#i-chev-down"/></svg></button>
                 <button class="mini danger" id="sfx-item-remove" title="Remove this sound (Delete)"><svg><use href="#i-delete"/></svg></button>

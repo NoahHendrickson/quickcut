@@ -1637,6 +1637,8 @@ function renderWatch() {
     const longest = (a) => Math.max(...a.map((x) => x.length));
     $('#w-time').style.minWidth = `${longest([fmtLabel(d), `Frame ${frameCount().toLocaleString()}`])}ch`;
     $('#w-total').style.minWidth = `${longest([fmtLabel(d), `of ${frameCount().toLocaleString()}`])}ch`;
+    // Edit-row time fields fit the longest time in this video (0:07.00 or 1:02:07.00)
+    $('#editor').style.setProperty('--tch', fmt(d).length);
   }
   // Loop: yellow button, yellow section with two draggable ends on the seek bar
   const { a, b } = S.loop;
