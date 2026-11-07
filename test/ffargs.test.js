@@ -246,6 +246,35 @@ for (const file of ['src.mp4', 'sync.mkv', 'multi.mp4']) {
 check('partsFromPoints drops duplicate cuts', partsFromPoints(0, 10, [4, 4, 4.01, 8]).length === 3);
 check('nearestKeyframe stays inside range', nearestKeyframe([[0, 0], [2, 1.9], [4, 3.9]], 0.5, 0, 10).t === 2);
 
+// 13. Speed-up: 4x between 4s and 8s of a 2..10s trim -> 2 + 1 + 2 = 5s, still 60 fps.
+const fpsOf = (f) => {
+  const n = Number(execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_packets', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', f]).toString());
+  return n;
+};
+{
+  const r = run('speedup', 'src.mp4', { inT: 2, outT: 10, slow: { enabled: true, start: 4, end: 8, speed: 4 }, sfx: [], origVolume: 1 });
+  if (r) {
+    check('speed-up: reason', r.plan.reasons.includes('speed-up'));
+    check('speed-up: 5s long', near(streamDur(r.res.raw, 'video'), 5, 0.1), String(streamDur(r.res.raw, 'video')));
+    check('speed-up: audio 5s', near(streamDur(r.res.raw, 'audio'), 5, 0.15), String(streamDur(r.res.raw, 'audio')));
+    const frames = fpsOf(r.outPath);
+    check('speed-up: stays 60 fps (~300 frames, not 600)', Math.abs(frames - 300) <= 3, `${frames} frames`);
+  }
+}
+{
+  // Odd typed multiplier
+  const r = run('speed-137', 'src.mp4', { inT: 0, outT: 6, slow: { enabled: true, start: 0, end: 6, speed: 1.37 }, sfx: [], origVolume: 1 });
+  if (r) check('speed 1.37x: 6/1.37 = 4.38s', near(streamDur(r.res.raw, 'video'), 6 / 1.37, 0.06), String(streamDur(r.res.raw, 'video')));
+}
+for (const ext of ['mp4', 'mkv']) {
+  // flash + beep at 5.0s inside a 2x section starting at 4.0s; trim from 3.5 -> lands at 0.5 + 1/2 = 1.0s
+  const r = run(`sync-${ext}-fast`, `sync.${ext}`, { inT: 3.5, outT: 8, slow: { enabled: true, start: 4, end: 6, speed: 2 }, sfx: [], origVolume: 1 });
+  if (r) {
+    const t = syncTimes(r.outPath);
+    check(`sync ${ext} speed-up: flash at 1.0s, beep within 1 frame`, t.flash !== null && t.beep !== null && near(t.flash, 1.0, 0.04) && Math.abs(t.beep - t.flash) <= 0.017, `flash=${t.flash} beep=${t.beep}`);
+  }
+}
+
 // 12. Zoom effect: 2x into the center from 3s to 7s.
 const zoom2x = { start: 3, end: 7, amount: 2, fx: 0.5, fy: 0.5, ease: 'smooth' };
 const psnr = (a, b) => {

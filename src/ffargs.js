@@ -203,7 +203,7 @@ export function planExport(src, edit) {
   const zoomsIn = (edit.zooms || []).filter((z) => z.amount > 1.001 && z.end > edit.inT && z.start < edit.outT);
   const copyVideo = !slowOn && !edit.exact && zoomsIn.length === 0 && src.hasVideo;
   const reasons = [];
-  if (slowOn) reasons.push('slow motion');
+  if (slowOn) reasons.push(edit.slow.speed < 1 ? 'slow motion' : 'speed-up');
   if (zoomsIn.length) reasons.push('zoom');
   if (edit.exact) reasons.push('frame-exact start');
 
@@ -373,7 +373,9 @@ export function buildExportArgs(src, plan, opts) {
     );
     plan.segments.forEach((s, i) => {
       const trim = i === n - 1 ? `trim=start=${fmt(s.from)}` : `trim=start=${fmt(s.from)}:end=${fmt(s.to)}`;
-      const pts = s.speed === 1 ? 'PTS-STARTPTS' : `(PTS-STARTPTS)/${fmt(s.speed)}`;
+      // Sped-up parts drop frames back to the source frame rate instead of
+      // packing them in (a 60 fps clip at 4x would otherwise become 240 fps).
+      const pts = s.speed === 1 ? 'PTS-STARTPTS' : `(PTS-STARTPTS)/${fmt(s.speed)}${s.speed > 1 ? `,fps=${fmt(src.fps || 30)}` : ''}`;
       graph.push(`[vs${i}in]${trim},setpts=${pts}[vs${i}]`);
     });
     graph.push(`${plan.segments.map((_, i) => `[vs${i}]`).join('')}concat=n=${n}:v=1:a=0[vout]`);

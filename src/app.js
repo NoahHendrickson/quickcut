@@ -16,7 +16,13 @@ const stemOf = (p) => basename(p).replace(/\.[^.]+$/, '');
 const uid = () => Math.random().toString(36).slice(2, 10);
 const icon = (name) => `<svg><use href="#i-${name}"/></svg>`;
 /** 1:02.35 (centiseconds): precise enough to read, short enough to scan. */
-const fmt = (t) => formatTime(t).slice(0, -1);
+const fmt = (t) => formatTime(Math.round(t * 100) / 100 + 1e-6).slice(0, -1);
+/** 0.5 -> "0.5", 2 -> "2", 0.333 -> "0.333" */
+const fmtSpeed = (v) => String(Math.round(v * 1000) / 1000);
+const describeSpeed = (v) =>
+  Math.abs(v - 1) < 1e-6 ? 'Normal speed (no effect)'
+    : v < 1 ? `${Math.round((1 / v) * 10) / 10}× slower`
+      : `${Math.round(v * 10) / 10}× faster`;
 
 // ---------------------------------------------------------------------------
 // State
@@ -55,6 +61,12 @@ const S = {
   detail: null, // {url, start, end, count}: exact frames for the zoomed-in view
   wave: null, // media URL of the waveform PNG
   tool: 'trim', // trim | slow | sound | amp | split | export
+  // Watch = a player for investigating clips; Edit = the editor. Remembered between launches.
+  mode: settings.mode === 'edit' ? 'edit' : 'watch',
+  watchRate: Number(settings.watchRate) > 0 ? Number(settings.watchRate) : 1,
+  loop: { a: null, b: null }, // Watch-mode A-B loop (source seconds)
+  mag: { scale: 1, x: 0, y: 0 }, // Watch-mode picture zoom (px within the video frame)
+  quick: null, // Quick trim in the player: { prevIn, prevOut, saved: null | path, saving: false }
   confirmReplace: false,
   busy: null, // 'proxy' | 'export'
   progress: null,
@@ -122,6 +134,7 @@ async function openVideo(path) {
   Object.assign(S, {
     path, info, usingProxy: false, inT: 0, outT: info.duration, sfx: [], selectedSfx: null, zooms: [], selectedZoom: null,
     origVolume: 1, exact: false, keyframeIn: null, keyframeFor: null, thumbs: null, detail: null, wave: null, confirmReplace: false,
+    loop: { a: null, b: null }, mag: { scale: 1, x: 0, y: 0 }, quick: null,
     view: { start: 0, end: Math.max(info.duration, 0.1) },
   });
   S.slow = { enabled: false, start: 0, end: 0, speed: S.slow.speed, muteAudio: S.slow.muteAudio };
@@ -322,15 +335,16 @@ const vframe = $('#vframe');
 /** Size the frame to the video's shape so zooming can be clipped to it. */
 function layoutFrame() {
   const stage = $('#stage');
-  const pad = 24;
+  // Edge to edge: the video gets all the space between the header and the controls.
+  const pad = 0;
   const W = stage.clientWidth - pad * 2;
-  const H = stage.clientHeight - 8;
+  const H = stage.clientHeight - pad * 2;
   const vw = video.videoWidth || (S.info && S.info.width) || 16;
   const vh = video.videoHeight || (S.info && S.info.height) || 9;
   const scale = Math.min(W / vw, H / vh);
   const w = Math.max(0, vw * scale);
   const h = Math.max(0, vh * scale);
-  Object.assign(vframe.style, { width: `${w}px`, height: `${h}px`, left: `${(stage.clientWidth - w) / 2}px`, top: `${(H - h) / 2 + 4}px` });
+  Object.assign(vframe.style, { width: `${w}px`, height: `${h}px`, left: `${(stage.clientWidth - w) / 2}px`, top: `${(H - h) / 2 + pad}px` });
   renderZoomBox();
 }
 new ResizeObserver(layoutFrame).observe($('#stage'));
@@ -338,7 +352,7 @@ video.addEventListener('loadedmetadata', layoutFrame);
 
 const selectedZoom = () => S.zooms.find((z) => z.id === S.selectedZoom) || null;
 /** While aiming (Zoom tool, paused, a zoom selected) show the whole frame with the target box. */
-const aiming = () => S.tool === 'zoom' && !!selectedZoom() && video.paused;
+const aiming = () => S.mode === 'edit' && S.tool === 'zoom' && !!selectedZoom() && video.paused;
 
 let lastZoomCss = '';
 function applyZoomPreview(t) {
@@ -463,17 +477,32 @@ function togglePlay() {
   if (!S.path) return;
   if (video.paused) {
     const t = currentT();
-    if (t >= S.outT - 0.02 || t < S.inT - 0.02) seek(S.inT);
+    if (S.mode === 'watch' && S.quick) {
+      if (t < S.inT - 0.02 || t >= S.outT - 0.02) seek(S.inT);
+    } else if (S.mode === 'watch') {
+      const { a, b } = S.loop;
+      if (a != null && b != null && (t < a - 0.02 || t >= b - 0.02)) seek(a);
+      else if (t >= duration() - 0.05) seek(0);
+    } else if (t >= S.outT - 0.02 || t < S.inT - 0.02) seek(S.inT);
     video.play().catch(() => {});
   } else {
     video.pause();
   }
 }
+/** Watch mode: move exactly k frames. Lands mid-frame so the right frame always shows. */
+function stepFrame(k) {
+  if (!S.path) return;
+  video.pause();
+  const f = fps();
+  const total = Math.max(1, Math.round(duration() * f));
+  const n = clamp(Math.floor(currentT() * f + 1e-6) + k, 0, total - 1);
+  seek((n + 0.5) / f);
+}
 function step(frames) {
   video.pause();
   seek(currentT() + frames / fps());
 }
-const setPlayIcon = (name) => $('#btn-play use').setAttribute('href', `#i-${name}`);
+const setPlayIcon = (name) => $$('.play-btn use').forEach((u) => u.setAttribute('href', `#i-${name}`));
 video.addEventListener('play', () => {
   renderZoomBox();
   setPlayIcon('pause');
@@ -490,7 +519,15 @@ let lastT = 0;
 let lastShown = -1;
 function tick() {
   const t = currentT();
-  if (S.path && !video.paused) {
+  if (S.path && !video.paused && S.mode === 'watch') {
+    // Watch: raw playback at the chosen speed, looping A-B if set. No edits applied.
+    if (video.playbackRate !== S.watchRate) video.playbackRate = S.watchRate;
+    if (video.muted !== !!settings.muted) video.muted = !!settings.muted;
+    const { a, b } = S.loop;
+    if (S.quick) {
+      if (t >= S.outT && lastT < S.outT) { video.pause(); seek(S.outT); }
+    } else if (a != null && b != null && t >= b && seekTarget == null && !seeking) seek(a);
+  } else if (S.path && !video.paused) {
     if (t >= S.outT && lastT < S.outT) {
       video.pause();
       seek(S.outT);
@@ -499,7 +536,7 @@ function tick() {
     const inSlow = S.slow.enabled && t >= S.slow.start && t < S.slow.end;
     const rate = inSlow ? S.slow.speed : 1;
     if (video.playbackRate !== rate) video.playbackRate = rate;
-    video.muted = inSlow && S.slow.muteAudio;
+    video.muted = !!settings.muted || (inSlow && S.slow.muteAudio);
     // Sound effects the playhead just crossed
     for (const s of S.sfx) {
       if (s.at > lastT && s.at <= t && t - s.at < 0.3) playSfx(s, 0);
@@ -509,7 +546,8 @@ function tick() {
     if (span < duration() && (t > S.view.end || t < S.view.start)) setView(t - span * 0.1, t + span * 0.9);
   }
   lastT = t;
-  if (S.path) applyZoomPreview(t);
+  if (S.path) S.mode === 'edit' ? applyZoomPreview(t) : applyMagnify();
+  if (S.path && S.mode === 'watch' && t !== lastWatchT) renderWatchTime(t);
   if (t !== lastShown) {
     lastShown = t;
     $('#time-current').textContent = fmt(t);
@@ -519,9 +557,32 @@ function tick() {
 }
 requestAnimationFrame(tick);
 
+/** Player volume (and mute) apply in both modes; in Edit the clip's own volume scales it too. */
 function applyPreviewVolume() {
-  video.volume = clamp(settings.previewVolume * Math.min(1, S.origVolume), 0, 1);
+  const clip = S.mode === 'edit' ? Math.min(1, S.origVolume) : 1;
+  video.volume = clamp(settings.previewVolume * clip, 0, 1);
+  video.muted = !!settings.muted;
+  const quiet = settings.muted || settings.previewVolume < 0.001;
+  $('#w-mute use').setAttribute('href', quiet ? '#i-mute' : '#i-volume');
+  $('#w-mute').title = quiet ? 'Unmute (M)' : 'Mute (M) · ↑ ↓ change the volume';
+  if (document.activeElement !== $('#w-volume')) $('#w-volume').value = settings.muted ? 0 : settings.previewVolume;
 }
+function setVolume(v) {
+  settings.previewVolume = Math.round(clamp(v, 0, 1) * 100) / 100;
+  settings.muted = settings.previewVolume < 0.001;
+  saveSettings();
+  applyPreviewVolume();
+}
+function toggleMute() {
+  if (settings.muted && settings.previewVolume < 0.001) settings.previewVolume = 1;
+  settings.muted = !settings.muted;
+  saveSettings();
+  applyPreviewVolume();
+  toast(settings.muted ? 'Muted' : `Volume ${Math.round(settings.previewVolume * 100)}%`, 900);
+}
+$('#w-mute').addEventListener('click', toggleMute);
+$('#w-volume').addEventListener('input', (e) => setVolume(Number(e.target.value)));
+$('#w-volume').addEventListener('change', (e) => e.target.blur()); // arrow keys go back to frame stepping
 
 // ---------------------------------------------------------------------------
 // Sound effects
@@ -708,8 +769,11 @@ function renderTimeline() {
     const x1 = tToX(S.slow.end);
     place(slowEl, x0, x1 - x0);
     place(tint, x0, x1 - x0);
-    const speed = `${Math.round(S.slow.speed * 1000) / 1000}×`;
-    slowEl.querySelector('span').textContent = x1 - x0 > 170 ? `${S.slow.speed < 1 ? 'Slow motion' : 'Fast'} · ${speed}` : speed;
+    const speed = `${fmtSpeed(S.slow.speed)}×`;
+    const fast = S.slow.speed > 1;
+    slowEl.classList.toggle('fast', fast);
+    tint.classList.toggle('fast', fast);
+    slowEl.querySelector('span').textContent = x1 - x0 > 170 ? `${fast ? 'Speed-up' : 'Slow motion'} · ${speed}` : speed;
   }
 
   const kf = $('#tl-keyframe');
@@ -1083,6 +1147,8 @@ bindTimeField($('#out-time'), (t) => setOut(t));
 // ---------------------------------------------------------------------------
 function setIn(t) {
   if (!S.path) return;
+  // Start at the beginning of the frame on screen (Watch steps land mid-frame).
+  t = Math.floor(t * fps() + 1e-6) / fps();
   S.inT = clamp(t, 0, duration());
   if (S.inT >= S.outT) S.outT = duration();
   afterTrimChange();
@@ -1193,7 +1259,11 @@ function setSplitCount(n) {
 function syncAll() {
   const has = !!S.path;
   document.body.classList.toggle('empty', !has);
-  for (const id of ['#btn-play', '#btn-to-start', '#btn-back5', '#btn-fwd5', '#btn-export']) $(id).disabled = !has || (id === '#btn-export' && S.busy === 'export');
+  document.body.classList.toggle('mode-watch', S.mode === 'watch');
+  document.body.classList.toggle('mode-edit', S.mode === 'edit');
+  for (const id of ['#w-play', '#w-prev-frame', '#w-next-frame', '#w-back5', '#w-fwd5', '#w-back10', '#w-fwd10']) $(id).disabled = !has;
+  renderWatch();
+  for (const id of ['#btn-play', '#btn-to-start', '#btn-back10', '#btn-back5', '#btn-fwd5', '#btn-fwd10', '#btn-export']) $(id).disabled = !has || (id === '#btn-export' && S.busy === 'export');
 
   // Tool buttons + which options are showing
   $$('.tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === S.tool));
@@ -1219,7 +1289,8 @@ function syncAll() {
   if (document.activeElement !== $('#in-time')) $('#in-time').value = has ? fmt(S.inT) : '';
   if (document.activeElement !== $('#out-time')) $('#out-time').value = has ? fmt(S.outT) : '';
   // Slow-mo
-  $$('#slow-speeds button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === S.slow.speed));
+  if (document.activeElement !== $('#speed-input')) $('#speed-input').value = fmtSpeed(S.slow.speed);
+  $('#speed-desc').textContent = describeSpeed(S.slow.speed);
   $$('#slow-audio button').forEach((b) => b.classList.toggle('on', (b.dataset.v === 'mute') === S.slow.muteAudio));
   // Sound
   const sel = S.sfx.find((x) => x.id === S.selectedSfx);
@@ -1308,7 +1379,7 @@ function saveName(part = 0, pad = 1) {
 let savePreviewSeq = 0;
 function renderSave(ext, nParts) {
   const mode = saveMode();
-  $$('.seg button').forEach((b) => {
+  $$('#save-seg button').forEach((b) => {
     b.setAttribute('aria-checked', String(b.dataset.mode === mode));
     if (b.dataset.mode === 'replace') {
       b.disabled = S.split.enabled;
@@ -1351,7 +1422,9 @@ function renderSave(ext, nParts) {
 // ---------------------------------------------------------------------------
 T.event.listen('ffmpeg-progress', (e) => {
   const { ratio, speed } = e.payload;
-  if (S.busy === 'export') {
+  if (S.busy === 'export' && S.quick) {
+    $('#w-trim-save').textContent = `Saving… ${Math.round(ratio * 100)}%`;
+  } else if (S.busy === 'export') {
     // Map this ffmpeg run's progress onto the whole (multi-part) export.
     const p = S.progress || { base: 0, weight: 1, label: '' };
     const overall = clamp(p.base + ratio * p.weight, 0, 1);
@@ -1502,6 +1575,543 @@ async function runExport(plan, outputPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Watch mode: a player for investigating clips
+// ---------------------------------------------------------------------------
+function setMode(mode) {
+  if (S.mode === mode) return;
+  // Marked a moment in Watch? Make it the trim when you start editing.
+  if (mode === 'edit' && S.path) {
+    const { a, b } = S.loop;
+    const untouched = S.inT <= 0.001 && S.outT >= duration() - 0.001;
+    if (a != null && b != null && untouched) {
+      S.inT = Math.floor(a * fps() + 1e-6) / fps();
+      S.outT = b;
+      requestKeyframe();
+      toast('Trim set to your loop');
+    }
+  }
+  if (S.quick) S.quick = null;
+  S.mode = mode;
+  settings.mode = mode;
+  saveSettings();
+  S.confirmReplace = false;
+  video.style.transform = 'none';
+  lastMagCss = '';
+  lastZoomCss = '!';
+  syncAll();
+}
+$('#w-full-edit').addEventListener('click', () => setMode('edit'));
+$('#e-back').addEventListener('click', () => setMode('watch'));
+
+// Full screen (the whole window). Controls float over the video and fade while playing.
+const appWindow = T.window.getCurrentWindow();
+async function setFullscreen(on) {
+  try {
+    if (appWindow.setFullscreen) await appWindow.setFullscreen(on);
+    else if (on) await document.documentElement.requestFullscreen();
+    else if (document.fullscreenElement) await document.exitFullscreen();
+  } catch {
+    // Not supported here: ignore.
+  }
+  document.body.classList.toggle('fullscreen', on);
+  $('#w-fullscreen use').setAttribute('href', on ? '#i-fullscreen-exit' : '#i-fullscreen');
+  $('#w-fullscreen').title = on ? 'Exit full screen (Esc)' : 'Full screen (F, or double-click the video)';
+  wakeControls();
+  layoutFrame();
+}
+const isFullscreen = () => document.body.classList.contains('fullscreen');
+const toggleFullscreen = () => setFullscreen(!isFullscreen());
+$('#w-fullscreen').addEventListener('click', toggleFullscreen);
+// Keep in sync if the OS takes the window out of full screen.
+addEventListener('resize', async () => {
+  if (!isFullscreen() || !appWindow.isFullscreen) return;
+  if (!(await appWindow.isFullscreen())) setFullscreen(false);
+});
+let idleTimer = null;
+function wakeControls() {
+  document.body.classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    const overBar = $('#watchbar').matches(':hover');
+    if (isFullscreen() && S.mode === 'watch' && !video.paused && !overBar && !S.quick) document.body.classList.add('idle');
+  }, 2500);
+}
+for (const ev of ['pointermove', 'pointerdown', 'keydown']) document.addEventListener(ev, wakeControls, { passive: true });
+video.addEventListener('play', wakeControls);
+video.addEventListener('pause', wakeControls);
+
+// Seek bar + readouts
+let lastWatchT = -1;
+const frameCount = () => Math.max(1, Math.round(duration() * fps()));
+const frameAt = (t) => clamp(Math.floor(t * fps() + 1e-6) + 1, 1, frameCount());
+/** Watch speed: 1 -> "1.0", 0.25 -> "0.25" (like the design's "1.0"). */
+const fmtRate = (v) => (Number.isInteger(v) ? v.toFixed(1) : fmtSpeed(v));
+function renderWatchTime(t) {
+  lastWatchT = t;
+  const d = duration() || 1;
+  const pct = `${clamp(t / d, 0, 1) * 100}%`;
+  $('#w-progress').style.width = pct;
+  $('#w-head').style.left = pct;
+  const n = frameAt(t);
+  const time = $('#w-time');
+  time.textContent = settings.showFrames ? `Frame ${n.toLocaleString()}` : fmt(t);
+  time.title = `${settings.showFrames ? fmt(t) : `Frame ${n.toLocaleString()}`} of ${frameCount().toLocaleString()} · ${Math.round(fps() * 100) / 100} fps\nClick to show ${settings.showFrames ? 'the time' : 'frame numbers'}`;
+}
+function renderWatch() {
+  const r = S.watchRate;
+  $('#w-speed-label').textContent = fmtRate(r);
+  $('#w-speed').classList.toggle('changed', Math.abs(r - 1) > 1e-6);
+  $('#w-total').textContent = !S.path ? '0:00' : settings.showFrames ? `of ${frameCount().toLocaleString()}` : formatTime(duration(), false);
+  // Loop: yellow button, yellow section with two draggable ends on the seek bar
+  const { a, b } = S.loop;
+  const on = !!S.path && a != null && b != null;
+  document.body.classList.toggle('looping', on && S.mode === 'watch');
+  const btn = $('#w-loop-btn');
+  btn.classList.toggle('on', on);
+  btn.title = on ? `Looping ${fmt(a)} – ${fmt(b)}. Drag its ends on the seek bar. Click to stop (X)`
+    : 'Loop a section: drag its ends on the seek bar (I / O set them to the playhead)';
+  if (on) {
+    const d = duration() || 1;
+    $('#w-loop').style.left = `${(a / d) * 100}%`;
+    $('#w-loop').style.width = `${((b - a) / d) * 100}%`;
+    $('#w-la').style.left = `${(a / d) * 100}%`;
+    $('#w-lb').style.left = `${(b / d) * 100}%`;
+  }
+  renderQuickTrim();
+  const mag = $('#w-mag');
+  mag.hidden = S.mag.scale <= 1.0001;
+  mag.textContent = `${Math.round(S.mag.scale * 100)}%`;
+  lastWatchT = -1;
+}
+$('#w-time').addEventListener('click', () => {
+  settings.showFrames = !settings.showFrames;
+  saveSettings();
+  renderWatch();
+});
+
+const scrub = $('#w-scrub');
+const scrubT = (e) => {
+  const r = scrub.getBoundingClientRect();
+  return clamp((e.clientX - r.left) / r.width, 0, 1) * duration();
+};
+/** The time bubble above the seek bar while dragging a handle. */
+function scrubBubble(t, kind) {
+  const b = $('#w-bubble');
+  if (t == null) return (b.hidden = true);
+  const w = scrub.clientWidth;
+  b.hidden = false;
+  b.className = kind || '';
+  b.textContent = fmt(t);
+  b.style.left = `${clamp((t / (duration() || 1)) * w, 30, w - 30)}px`;
+}
+scrub.addEventListener('pointerdown', (e) => {
+  if (!S.path || e.button !== 0) return;
+  const handle = S.quick && !S.quick.saved && e.target.closest('.w-handle');
+  if (handle) return dragQuickHandle(e, handle.id === 'w-h-in' ? 'in' : 'out');
+  const loopEnd = !S.quick && e.target.closest('.w-lhandle');
+  if (loopEnd) return dragLoopEnd(e, loopEnd.id === 'w-la' ? 'a' : 'b');
+  scrub.setPointerCapture(e.pointerId);
+  scrub.classList.add('drag');
+  const wasPlaying = !video.paused;
+  video.pause();
+  seek(scrubT(e));
+  const move = (ev) => seek(scrubT(ev));
+  const up = () => {
+    scrub.classList.remove('drag');
+    scrub.removeEventListener('pointermove', move);
+    scrub.removeEventListener('pointerup', up);
+    if (wasPlaying) video.play().catch(() => {});
+  };
+  scrub.addEventListener('pointermove', move);
+  scrub.addEventListener('pointerup', up);
+});
+let quickDragging = false;
+scrub.addEventListener('pointermove', (e) => {
+  const hv = $('#w-hover');
+  if (!S.path || quickDragging || e.target.closest('.w-lhandle, .w-handle')) return (hv.hidden = true);
+  const r = scrub.getBoundingClientRect();
+  hv.hidden = false;
+  hv.textContent = fmt(scrubT(e));
+  hv.style.left = `${clamp(e.clientX - r.left, 30, r.width - 30)}px`;
+});
+scrub.addEventListener('pointerleave', () => ($('#w-hover').hidden = true));
+
+// Frame stepping buttons repeat while held, like the arrow keys.
+function holdRepeat(btn, fn) {
+  let timer = null;
+  const stop = () => { clearTimeout(timer); clearInterval(timer); timer = null; };
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || btn.disabled) return;
+    fn();
+    timer = setTimeout(() => { timer = setInterval(fn, 70); }, 350);
+  });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) btn.addEventListener(ev, stop);
+}
+holdRepeat($('#w-prev-frame'), () => stepFrame(-1));
+holdRepeat($('#w-next-frame'), () => stepFrame(1));
+$('#w-play').addEventListener('click', togglePlay);
+$('#w-back5').addEventListener('click', () => seek(currentT() - 5));
+$('#w-fwd5').addEventListener('click', () => seek(currentT() + 5));
+$('#w-back10').addEventListener('click', () => seek(currentT() - 10));
+$('#w-fwd10').addEventListener('click', () => seek(currentT() + 10));
+
+// Playback speed (Watch only; it's not an edit). The value opens a menu with a custom field.
+const WATCH_SPEEDS = [0.1, 0.125, 0.25, 0.33, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 8, 16];
+const MENU_SPEEDS = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4, 8];
+function setWatchRate(v) {
+  S.watchRate = Math.round(clamp(v, 0.1, 16) * 1000) / 1000;
+  settings.watchRate = S.watchRate;
+  saveSettings();
+  if (!video.paused && S.mode === 'watch') video.playbackRate = S.watchRate;
+  renderWatch();
+}
+const nudgeWatchRate = (dir) => {
+  const r = S.watchRate;
+  const next = dir > 0 ? WATCH_SPEEDS.find((v) => v > r + 1e-6) : [...WATCH_SPEEDS].reverse().find((v) => v < r - 1e-6);
+  if (next) setWatchRate(next);
+};
+const speedMenu = $('#w-speed-menu');
+function closeSpeedMenu() {
+  // Hand the keyboard back to the player's shortcuts.
+  if (speedMenu.contains(document.activeElement)) document.activeElement.blur();
+  speedMenu.hidden = true;
+}
+function toggleSpeedMenu() {
+  if (!speedMenu.hidden) return closeSpeedMenu();
+  const r = S.watchRate;
+  const custom = !MENU_SPEEDS.some((v) => Math.abs(v - r) < 1e-6);
+  speedMenu.innerHTML = MENU_SPEEDS.map((v) => {
+    const on = Math.abs(v - r) < 1e-6;
+    return `<button type="button" data-v="${v}" class="${on ? 'on' : ''}"><span>${fmtRate(v)}×</span>${on ? icon('check') : v === 1 ? '<span class="k">Normal</span>' : ''}</button>`;
+  }).join('') + `<div class="sep"></div><label>Custom <input id="w-speed-custom" inputmode="decimal" spellcheck="false" autocomplete="off" placeholder="0.1–16" value="${custom ? fmtSpeed(r) : ''}" /></label>`;
+  speedMenu.hidden = false;
+  const input = $('#w-speed-custom');
+  input.addEventListener('input', () => {
+    const v = parseSpeed(input.value);
+    input.classList.toggle('invalid', input.value.trim() !== '' && !(v >= 0.1 && v <= 16));
+  });
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') return closeSpeedMenu();
+    if (e.key !== 'Enter') return;
+    const v = parseSpeed(input.value);
+    if (v >= 0.1 && v <= 16) { setWatchRate(v); closeSpeedMenu(); } else input.classList.add('invalid');
+  });
+}
+speedMenu.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  setWatchRate(Number(b.dataset.v));
+  closeSpeedMenu();
+});
+$('#w-speed-btn').addEventListener('click', toggleSpeedMenu);
+$('#w-speed-val').addEventListener('click', toggleSpeedMenu);
+document.addEventListener('pointerdown', (e) => { if (!speedMenu.hidden && !e.target.closest('#w-speed')) closeSpeedMenu(); });
+
+// Loop: a yellow section on the seek bar. Starts at the playhead; drag either end to adjust.
+const minLoop = () => Math.max(2 / fps(), 0.1);
+const defaultLoopLen = () => Math.min(duration(), clamp(duration() * 0.1, 1, 10));
+function startLoop(at = currentT()) {
+  if (!S.path) return;
+  const d = duration();
+  const len = defaultLoopLen();
+  let a = clamp(at, 0, d);
+  let b = a + len;
+  if (b > d) { b = d; a = Math.max(0, d - len); }
+  S.loop = { a, b };
+  renderWatch();
+}
+const clearLoop = () => { S.loop = { a: null, b: null }; renderWatch(); };
+const toggleLoop = () => (S.loop.a != null ? clearLoop() : startLoop());
+/** I / O: move the loop's start / end to the playhead (starting a loop if there isn't one). */
+function setLoopPoint(which) {
+  if (!S.path) return;
+  const t = currentT();
+  const d = duration();
+  const len = defaultLoopLen();
+  let { a, b } = S.loop;
+  if (a == null) {
+    a = which === 'a' ? t : Math.max(0, t - len);
+    b = which === 'b' ? t : Math.min(d, t + len);
+  } else if (which === 'a') {
+    a = t;
+    if (b - a < minLoop()) b = Math.min(d, a + len);
+  } else {
+    b = t;
+    if (b - a < minLoop()) a = Math.max(0, b - len);
+  }
+  S.loop = { a, b };
+  renderWatch();
+}
+function dragLoopEnd(e, which) {
+  const el = $(which === 'a' ? '#w-la' : '#w-lb');
+  el.classList.add('active');
+  quickDragging = true;
+  $('#w-hover').hidden = true;
+  scrub.setPointerCapture(e.pointerId);
+  const wasPlaying = !video.paused;
+  video.pause();
+  const move = (ev) => {
+    const t = snapFrame(scrubT(ev));
+    if (which === 'a') S.loop.a = clamp(t, 0, S.loop.b - minLoop());
+    else S.loop.b = clamp(t, S.loop.a + minLoop(), duration());
+    seek(S.loop[which]); // show the frame under the handle
+    scrubBubble(S.loop[which], 'loop');
+    renderWatch();
+  };
+  const up = () => {
+    el.classList.remove('active');
+    quickDragging = false;
+    scrubBubble(null);
+    scrub.removeEventListener('pointermove', move);
+    scrub.removeEventListener('pointerup', up);
+    if (wasPlaying) { seek(S.loop.a); video.play().catch(() => {}); }
+  };
+  scrub.addEventListener('pointermove', move);
+  scrub.addEventListener('pointerup', up);
+}
+$('#w-loop-btn').addEventListener('click', toggleLoop);
+
+// Picture zoom: scroll on the video to zoom in where the mouse is, drag to look around.
+let lastMagCss = '';
+function clampMag() {
+  const m = S.mag;
+  const W = vframe.clientWidth;
+  const H = vframe.clientHeight;
+  m.scale = clamp(m.scale, 1, 8);
+  m.x = clamp(m.x, W - W * m.scale, 0);
+  m.y = clamp(m.y, H - H * m.scale, 0);
+}
+function applyMagnify() {
+  const m = S.mag;
+  const css = m.scale > 1.0001 ? `translate(${m.x}px, ${m.y}px) scale(${m.scale})` : 'none';
+  document.body.classList.toggle('magnified', m.scale > 1.0001 && S.mode === 'watch');
+  if (css === lastMagCss) return;
+  lastMagCss = css;
+  video.style.transformOrigin = '0 0';
+  video.style.transform = css;
+}
+function magnifyAt(factor, cx, cy) {
+  const m = S.mag;
+  const s1 = clamp(m.scale * factor, 1, 8);
+  m.x = cx - (cx - m.x) * (s1 / m.scale);
+  m.y = cy - (cy - m.y) * (s1 / m.scale);
+  m.scale = s1;
+  clampMag();
+  renderWatch();
+}
+const resetMag = () => { S.mag = { scale: 1, x: 0, y: 0 }; renderWatch(); };
+$('#w-mag').addEventListener('click', resetMag);
+vframe.addEventListener('wheel', (e) => {
+  if (S.mode !== 'watch' || !S.path) return;
+  e.preventDefault();
+  const r = vframe.getBoundingClientRect();
+  magnifyAt(Math.exp(-e.deltaY * 0.002), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+vframe.addEventListener('pointerdown', (e) => {
+  if (S.mode !== 'watch' || !S.path || e.button !== 0) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  const m0 = { ...S.mag };
+  let moved = false;
+  vframe.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 4) moved = true;
+    if (!moved || S.mag.scale <= 1.0001) return;
+    document.body.classList.add('panning');
+    S.mag.x = m0.x + (ev.clientX - x0);
+    S.mag.y = m0.y + (ev.clientY - y0);
+    clampMag();
+  };
+  const up = () => {
+    document.body.classList.remove('panning');
+    vframe.removeEventListener('pointermove', move);
+    vframe.removeEventListener('pointerup', up);
+    if (!moved) togglePlay(); // click the picture to play / pause, like most players
+  };
+  vframe.addEventListener('pointermove', move);
+  vframe.addEventListener('pointerup', up);
+});
+vframe.addEventListener('dblclick', () => {
+  if (S.mode === 'watch' && S.path) toggleFullscreen();
+});
+new ResizeObserver(() => { clampMag(); lastMagCss = ''; }).observe(vframe);
+
+// ---------------------------------------------------------------------------
+// Quick trim: trim straight from the player, no editor
+// ---------------------------------------------------------------------------
+function startQuickTrim() {
+  if (!S.path || S.busy) return;
+  video.pause();
+  S.quick = { prevIn: S.inT, prevOut: S.outT, saved: null, exact: false };
+  // Start from the A-B loop if one is set, else the whole clip.
+  const { a, b } = S.loop;
+  if (a != null && b != null) {
+    S.inT = Math.floor(a * fps() + 1e-6) / fps();
+    S.outT = b;
+  }
+  requestKeyframe();
+  syncAll();
+}
+function endQuickTrim(keep) {
+  if (!S.quick) return;
+  if (!keep) {
+    S.inT = S.quick.prevIn;
+    S.outT = S.quick.prevOut;
+    requestKeyframe();
+  }
+  S.quick = null;
+  syncAll();
+}
+function quickSet(which, t) {
+  const d = duration();
+  const minLen = Math.max(1 / fps(), 0.05);
+  if (which === 'in') S.inT = clamp(Math.floor(t * fps() + 1e-6) / fps(), 0, S.outT - minLen);
+  else S.outT = clamp(t, S.inT + minLen, d);
+  requestKeyframe();
+  renderWatch();
+}
+function dragQuickHandle(e, which) {
+  const handle = $(which === 'in' ? '#w-h-in' : '#w-h-out');
+  handle.classList.add('active');
+  quickDragging = true;
+  $('#w-hover').hidden = true;
+  scrub.setPointerCapture(e.pointerId);
+  video.pause();
+  const move = (ev) => {
+    const t = snapFrame(scrubT(ev));
+    const minLen = Math.max(1 / fps(), 0.05);
+    if (which === 'in') S.inT = clamp(t, 0, S.outT - minLen);
+    else S.outT = clamp(t, S.inT + minLen, duration());
+    const at = which === 'in' ? S.inT : S.outT;
+    seek(at); // show the exact frame under the handle
+    scrubBubble(at);
+    renderQuickTrim();
+  };
+  const up = () => {
+    handle.classList.remove('active');
+    quickDragging = false;
+    scrubBubble(null);
+    scrub.removeEventListener('pointermove', move);
+    scrub.removeEventListener('pointerup', up);
+    requestKeyframe();
+    renderWatch();
+  };
+  scrub.addEventListener('pointermove', move);
+  scrub.addEventListener('pointerup', up);
+}
+function renderQuickTrim() {
+  const q = S.quick;
+  document.body.classList.toggle('quicktrim', !!q && S.mode === 'watch');
+  if (!q || !S.path) return;
+  const d = duration() || 1;
+  const pi = (S.inT / d) * 100;
+  const po = (S.outT / d) * 100;
+  $('#w-dim-l').style.left = '0';
+  $('#w-dim-l').style.width = `${pi}%`;
+  $('#w-dim-r').style.left = `${po}%`;
+  $('#w-dim-r').style.width = `${100 - po}%`;
+  $('#w-sel').style.left = `${pi}%`;
+  $('#w-sel').style.width = `${po - pi}%`;
+  $('#w-h-in').style.left = `${pi}%`;
+  $('#w-h-out').style.left = `${po}%`;
+  // Lossless cuts start on a keyframe: say so when that moves the start.
+  const plan = planExport(S.info, { ...quickEdit(), exact: false });
+  let note = '';
+  if (q.saved) note = '';
+  else if (q.exact) note = '<span class="dim">exact start (re-encodes) · <a href="#" data-a="lossless">keep lossless</a></span>';
+  else if (S.keyframeFor === S.inT && plan.snapDelta > 0.0005) {
+    note = `<span class="dim">lossless cut starts ${plan.snapDelta.toFixed(2)}s earlier, at a keyframe · <a href="#" data-a="exact">make exact</a></span>`;
+  }
+  $('#w-trim-info').innerHTML = `<span class="w-trim-main">Trim <b>${fmt(S.inT)}</b> → <b>${fmt(S.outT)}</b> · ${fmt(S.outT - S.inT)}</span>${note}`;
+  $('#w-quick-edit').hidden = !!q.saved;
+  $('#w-quick-done').hidden = !q.saved;
+  if (q.saved) $('#w-saved-name').textContent = `Saved ${basename(q.saved)}`;
+  if (!S.busy) $('#w-trim-save').textContent = 'Save trim';
+  $('#w-trim-save').disabled = $('#w-trim-cancel').disabled = !!S.busy;
+}
+/** Quick trim = a plain lossless trim, without any Edit-mode effects. */
+function quickEdit() {
+  return {
+    inT: S.inT, outT: S.outT, exact: !!(S.quick && S.quick.exact),
+    keyframeIn: S.keyframeFor === S.inT ? S.keyframeIn : S.inT,
+    slow: { enabled: false, start: 0, end: 0, speed: 1 }, sfx: [], zooms: [], origVolume: 1,
+  };
+}
+async function quickSave() {
+  if (!S.quick || S.busy || !S.path) return;
+  if (S.outT - S.inT < 0.05) return toast('The selection is too short');
+  video.pause();
+  S.busy = 'export';
+  renderQuickTrim();
+  $('#w-trim-save').textContent = 'Saving…';
+  let outputPath = null;
+  try {
+    const edit = quickEdit();
+    if (!edit.exact) edit.keyframeIn = await ensureKeyframe();
+    else if (S.encodersReady) await S.encodersReady;
+    const plan = planExport(S.info, edit);
+    outputPath = await invoke('output_path', { src: S.path, ext: plan.ext, name: defaultSaveName(), dir: settings.outDir || null });
+    await runExport(plan, outputPath);
+    if (S.quick) S.quick.saved = outputPath;
+  } catch (e) {
+    if (outputPath) invoke('remove_file', { path: outputPath });
+    if (String(e) !== 'cancelled') toast(`Couldn't save the trim: ${String(e).slice(0, 160)}`, 6000);
+  } finally {
+    S.busy = null;
+    syncAll();
+  }
+}
+$('#w-trim').addEventListener('click', startQuickTrim);
+$('#w-trim-info').addEventListener('click', (e) => {
+  const a = e.target.closest('a')?.dataset.a;
+  if (!a || !S.quick) return;
+  e.preventDefault();
+  S.quick.exact = a === 'exact';
+  renderQuickTrim();
+});
+$('#w-trim-cancel').addEventListener('click', () => endQuickTrim(false));
+$('#w-trim-save').addEventListener('click', quickSave);
+$('#w-trim-done').addEventListener('click', () => endQuickTrim(true));
+$('#w-saved-reveal').addEventListener('click', () => S.quick?.saved && invoke('reveal', { path: S.quick.saved }));
+
+function watchKey(e, k, handled) {
+  if (!speedMenu.hidden && k === 'Escape') { handled(); return closeSpeedMenu(); }
+  if (S.quick) {
+    if (k === 'Enter') { handled(); return S.quick.saved ? endQuickTrim(true) : quickSave(); }
+    if (k === 'Escape') { handled(); return S.quick.saved ? endQuickTrim(true) : endQuickTrim(false); }
+    if (k === 'i' || k === 'I') return quickSet('in', currentT());
+    if (k === 'o' || k === 'O') return quickSet('out', currentT());
+    if (k === 'Home') { handled(); return seek(S.inT); }
+    if (k === 'End') { handled(); return seek(S.outT); }
+  } else if (k === 't' || k === 'T') return startQuickTrim();
+  if (k === 'f' || k === 'F') return toggleFullscreen();
+  if (k === 'Escape' && isFullscreen()) return setFullscreen(false);
+  if (k === ' ' || k === 'k' || k === 'K') { handled(); togglePlay(); }
+  else if (k === 'ArrowLeft') { handled(); e.shiftKey ? seek(currentT() - 1) : stepFrame(-1); }
+  else if (k === 'ArrowRight') { handled(); e.shiftKey ? seek(currentT() + 1) : stepFrame(1); }
+  else if (k === 'j' || k === 'J') seek(currentT() - (e.shiftKey ? 10 : 5));
+  else if (k === 'l' || k === 'L') seek(currentT() + (e.shiftKey ? 10 : 5));
+  else if (k === 'm' || k === 'M') toggleMute();
+  else if (k === 'ArrowUp') { handled(); setVolume((settings.muted ? 0 : settings.previewVolume) + 0.05); toast(`Volume ${Math.round(settings.previewVolume * 100)}%`, 700); }
+  else if (k === 'ArrowDown') { handled(); setVolume(settings.previewVolume - 0.05); toast(settings.muted ? 'Muted' : `Volume ${Math.round(settings.previewVolume * 100)}%`, 700); }
+  else if (k === '[') nudgeWatchRate(-1);
+  else if (k === ']') nudgeWatchRate(1);
+  else if (k === 'r' || k === 'R') setWatchRate(1);
+  else if (k === 'i' || k === 'I') setLoopPoint('a');
+  else if (k === 'o' || k === 'O') setLoopPoint('b');
+  else if (k === 'x' || k === 'X') clearLoop();
+  else if (k === '+' || k === '=') magnifyAt(1.25, vframe.clientWidth / 2, vframe.clientHeight / 2);
+  else if (k === '-' || k === '_') magnifyAt(0.8, vframe.clientWidth / 2, vframe.clientHeight / 2);
+  else if (k === '0') resetMag();
+  else if (k === 'Home') { handled(); seek(S.loop.a ?? 0); }
+  else if (k === 'End') { handled(); seek(S.loop.b ?? duration()); }
+  else if (k === 'PageUp') { handled(); gotoSibling(-1); }
+  else if (k === 'PageDown') { handled(); gotoSibling(1); }
+  else if (k === '?') $('#help').showModal();
+}
+
+// ---------------------------------------------------------------------------
 // Encoder detection
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1616,6 +2226,8 @@ $('#btn-play').addEventListener('click', togglePlay);
 $('#btn-to-start').addEventListener('click', () => seek(S.inT));
 $('#btn-back5').addEventListener('click', () => seek(currentT() - 5));
 $('#btn-fwd5').addEventListener('click', () => seek(currentT() + 5));
+$('#btn-back10').addEventListener('click', () => seek(currentT() - 10));
+$('#btn-fwd10').addEventListener('click', () => seek(currentT() + 10));
 
 // Hover time on the ruler / lanes
 track.addEventListener('pointermove', (e) => {
@@ -1691,9 +2303,45 @@ $('#adv-toggle').addEventListener('click', (e) => {
   adv.hidden = !adv.hidden;
   e.currentTarget.classList.toggle('open', !adv.hidden);
 });
-$('#slow-speeds').addEventListener('click', (e) => {
-  const v = e.target.closest('button')?.dataset.v;
-  if (v) { S.slow.speed = Number(v); syncAll(); }
+// Speed multiplier: type any value from 0.1× to 16× ("2", "0.25", "1/4", "3x").
+const SPEED_MIN = 0.1;
+const SPEED_MAX = 16;
+function parseSpeed(text) {
+  const t = String(text).trim().toLowerCase().replace(/[×x\s]/g, '').replace(',', '.');
+  const frac = /^(\d*\.?\d+)\/(\d*\.?\d+)$/.exec(t);
+  const v = frac ? Number(frac[1]) / Number(frac[2]) : Number(t);
+  return isFinite(v) && v > 0 ? v : NaN;
+}
+function setSpeed(v) {
+  S.slow.speed = Math.round(clamp(v, SPEED_MIN, SPEED_MAX) * 1000) / 1000;
+  syncAll();
+}
+const speedInput = $('#speed-input');
+speedInput.addEventListener('input', () => {
+  const v = parseSpeed(speedInput.value);
+  const ok = isFinite(v) && v >= SPEED_MIN && v <= SPEED_MAX;
+  speedInput.parentElement.classList.toggle('invalid', !ok && speedInput.value.trim() !== '');
+  speedInput.parentElement.title = ok ? '' : `Enter a number from ${SPEED_MIN} to ${SPEED_MAX}`;
+  if (ok) { S.slow.speed = Math.round(v * 1000) / 1000; $('#speed-desc').textContent = describeSpeed(S.slow.speed); renderTimeline(); updateExportInfo(); }
+});
+speedInput.addEventListener('change', () => {
+  const v = parseSpeed(speedInput.value);
+  speedInput.parentElement.classList.remove('invalid');
+  if (isFinite(v)) setSpeed(v);
+  else syncAll(); // put the last good value back
+});
+speedInput.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter' || e.key === 'Escape') { if (e.key === 'Escape') speedInput.value = fmtSpeed(S.slow.speed); speedInput.blur(); }
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    // Nudge in steps that feel even: 0.05 below 1×, 0.25 up to 4×, 1 above.
+    const s = S.slow.speed;
+    const up = e.key === 'ArrowUp';
+    const step = (up ? s >= 4 : s > 4) ? 1 : (up ? s >= 1 : s > 1) ? 0.25 : 0.05;
+    setSpeed(Math.round((s + (up ? step : -step)) / step) * step);
+    speedInput.value = fmtSpeed(S.slow.speed);
+  }
 });
 $('#slow-audio').addEventListener('click', (e) => {
   const v = e.target.closest('button')?.dataset.v;
@@ -1737,7 +2385,7 @@ $('#split-remove').addEventListener('click', () => {
 });
 
 // Export sheet
-$$('.seg button').forEach((b) => b.addEventListener('click', () => {
+$$('#save-seg button').forEach((b) => b.addEventListener('click', () => {
   S.save.mode = b.dataset.mode;
   S.confirmReplace = false;
   updateExportInfo();
@@ -1779,18 +2427,21 @@ document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (document.querySelector('dialog[open]')) return;
 
-  if (ctrl && (e.key === 's' || e.key === 'e')) { e.preventDefault(); return doExport(); }
+  if (ctrl && (e.key === 's' || e.key === 'e')) { e.preventDefault(); if (S.mode !== 'edit') setMode('edit'); return doExport(); }
   if (ctrl && e.key === 'o') { e.preventDefault(); return pickAndOpen(); }
   if (e.key === 'Escape' && S.confirmReplace) { S.confirmReplace = false; return updateExportInfo(); }
   if (typing || tag === 'select' || ctrl || e.altKey) return;
 
   const k = e.key;
   const handled = () => e.preventDefault();
+  if (k === 'w' || k === 'W') return setMode('watch');
+  if (k === 'e' || k === 'E') return setMode('edit');
+  if (S.mode === 'watch') return watchKey(e, k, handled);
   if (k === ' ' || k === 'k' || k === 'K') { handled(); togglePlay(); }
   else if (k === 'ArrowLeft') { handled(); e.shiftKey ? seek(currentT() - 1) : step(-1); }
   else if (k === 'ArrowRight') { handled(); e.shiftKey ? seek(currentT() + 1) : step(1); }
-  else if (k === 'j' || k === 'J') seek(currentT() - 5);
-  else if (k === 'l' || k === 'L') seek(currentT() + 5);
+  else if (k === 'j' || k === 'J') seek(currentT() - (e.shiftKey ? 10 : 5));
+  else if (k === 'l' || k === 'L') seek(currentT() + (e.shiftKey ? 10 : 5));
   else if (k === 'i' || k === 'I') setIn(currentT());
   else if (k === 'o' || k === 'O') setOut(currentT());
   else if (k === 'Home') { handled(); seek(S.inT); }

@@ -1,10 +1,17 @@
 # QuickCut
 
-A small, fast Windows video editor for clips: trim, split, slow motion, zoom, sound effects and volume. Trims and splits keep your original quality bit for bit.
+A small, fast Windows video editor for clips: trim, split, speed (slow-mo or speed-up), zoom, sound effects and volume. Trims and splits keep your original quality bit for bit.
 
 **[Download for Windows](https://github.com/NoahHendrickson/quickcut/releases/latest/download/QuickCut-Setup.exe)** (Windows 10/11, 64-bit)
 
-![QuickCut](screenshots/31-zoom-aim.png)
+![QuickCut](screenshots/71-loop.png)
+
+## Two modes
+
+A slim header shows the file name and its details; the video fills the rest, with one bar of controls underneath: play, frame steps, ±5 / ±10 s, volume, the seek bar, **Loop** (turns yellow, then drag its two yellow ends on the seek bar), playback speed, **Edit**, **Trim** and full screen (or press F, or double-click the video).
+
+- **Watch**: a clean player for investigating clips. Step frame by frame (hold ← → to keep going), play at any speed from 0.1× to 16×, loop an A–B section, and scroll on the video to zoom into the picture. **Trim** right from the player: drag the two handles on the seek bar, play the selection to check it, and save. It's lossless by default, with an optional exact start.
+- **Edit**: trim, speed changes, zoom effects, sound effects, volume, splitting and export. Switching from Watch with an A–B loop set starts your trim on that loop.
 
 ## Install
 
@@ -12,7 +19,7 @@ A small, fast Windows video editor for clips: trim, split, slow motion, zoom, so
 2. Windows SmartScreen may say "Windows protected your PC" because the app isn't code-signed with a paid certificate: click **More info → Run anyway**.
 3. On first launch QuickCut downloads its video engine (ffmpeg, 78 MB, checksum-verified) once.
 
-QuickCut checks for updates when it starts. When there's a new version, an **Update** button appears at the top: one click downloads, installs and restarts. Updates are signed; the app refuses any update not signed with the project's key.
+QuickCut checks for updates when it starts. When there's a new version, an **Update** button appears in the header: one click downloads, installs and restarts. Updates are signed; the app refuses any update not signed with the project's key.
 
 ## Quality
 
@@ -20,7 +27,7 @@ QuickCut checks for updates when it starts. When there's a new version, an **Upd
 |---|---|---|
 | Trim / split | Video and audio stream-copied | Bit-for-bit identical |
 | Sound effects / volume | Video copied, audio remixed | Video untouched |
-| Slow motion / zoom / exact start | Re-encoded on your GPU (NVIDIA/AMD/Intel) or CPU | Visually lossless; 10-bit/HDR stays 10-bit |
+| Speed change (slow-mo or speed-up) / zoom / exact start | Re-encoded on your GPU (NVIDIA/AMD/Intel) or CPU | Visually lossless; 10-bit/HDR stays 10-bit |
 
 ## Development
 
@@ -57,4 +64,4 @@ The update signing key lives at `~/.tauri/quickcut.key` and must never be commit
 
 ## Licenses
 
-QuickCut downloads a GPL build of [FFmpeg](https://ffmpeg.org) ([BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), source: [FFmpeg release/8.1](https://github.com/FFmpeg/FFmpeg/tree/release/8.1)). Inter font: SIL Open Font License (`src/fonts/LICENSE.txt`).
+QuickCut downloads a GPL build of [FFmpeg](https://ffmpeg.org) ([BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), source: [FFmpeg release/8.1](https://github.com/FFmpeg/FFmpeg/tree/release/8.1)). Inter and Geist Mono fonts: SIL Open Font License (`src/fonts/LICENSE.txt`, `src/fonts/LICENSE-GeistMono.txt`). Icons: [Hugeicons](https://hugeicons.com) free set (MIT).
