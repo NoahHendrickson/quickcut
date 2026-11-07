@@ -18,7 +18,7 @@
   --btn-hover: rgba(255, 255, 255, 0.14);
   --track: rgba(255, 255, 255, 0.16);
   --divider: rgba(255, 255, 255, 0.16);
-  --yellow: #f9df85; /* pastel: the loop */
+  --yellow: #f5c46a; /* pastel amber: the loop */
   --trim: #8fc0ff;
   --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   --surface: #2c2c2c;
@@ -219,7 +219,7 @@ body.empty #vframe { display: none; }
 .pb-btn.primary { background: var(--blue); }
 .pb-btn.primary svg { color: #fff; }
 .pb-btn.primary:hover:not(:disabled) { background: var(--blue-hover); }
-.pb-time { border: none; background: none; padding: 0; color: #fff; font: 400 16px/20px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
+.pb-time { border: none; background: none; padding: 0; color: #fff; font: 400 14px/16px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
 button.pb-time { cursor: pointer; border-radius: 4px; }
 button.pb-time:hover { color: var(--blue-hover); }
 .clock { font: 400 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -452,13 +452,15 @@ button.pill.btnish { gap: 6px; }
   font-size: 11px;
   font-weight: 600;
   line-height: 32px;
-  padding: 0 8px 0 22px;
+  padding: 0 8px 0 7px;
   overflow: hidden;
   white-space: nowrap;
   cursor: grab;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
-.sfx-marker::before { content: "♪"; position: absolute; left: 8px; opacity: 0.85; }
+.sfx-marker { display: flex; align-items: center; gap: 5px; }
+.sfx-marker svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.9; pointer-events: none; }
+.sfx-marker span { pointer-events: none; overflow: hidden; text-overflow: ellipsis; }
 .sfx-marker.selected { box-shadow: inset 0 0 0 2px #fff; }
 
 .tl-dim { position: absolute; top: 34px; bottom: 0; background: rgba(20, 20, 20, 0.6); backdrop-filter: grayscale(0.8); pointer-events: none; z-index: 2; }
@@ -672,7 +674,7 @@ select:focus { border-color: var(--blue); }
 .pb-tools .pb-icon:hover { color: #fff; }
 .pb-tools .btn.update { height: 28px; margin-right: 4px; }
 #e-help { width: 28px; height: 28px; color: var(--text-2); }
-.pb-seek { flex: 1; min-width: 120px; display: flex; align-items: center; gap: 8px; }
+.pb-seek { flex: 1; min-width: 120px; display: flex; align-items: center; gap: 14px; }
 
 /* Volume: click the speaker to mute, the slider slides out on hover */
 .pb-vol { display: flex; align-items: center; }
@@ -693,13 +695,19 @@ select:focus { border-color: var(--blue); }
 
 /* Loop: yellow between two draggable ends */
 #w-loop { background: var(--yellow); z-index: 1; pointer-events: none; display: none; }
-.w-lhandle { position: absolute; top: 3px; width: 6px; height: 18px; margin-left: -3px; border-radius: 3px; background: var(--yellow); box-shadow: 0 0 0 2px var(--panel); cursor: ew-resize; z-index: 5; display: none; }
-.w-lhandle::before { content: ""; position: absolute; inset: -4px -6px; }
-.w-lhandle:hover, .w-lhandle.active { background: #fce9a9; transform: scaleY(1.1); }
-body.looping #w-loop, body.looping .w-lhandle { display: block; }
+/* Anchors (Figma 22:290): 10x18, 2px corners, a soft diagonal gradient, a white fully rounded line
+   inside, centred on the edge they mark. Trim knobs in blue, loop ends in pastel yellow. */
+.w-lhandle { position: absolute; top: 1px; height: 22px; cursor: ew-resize; z-index: 5; display: none; place-items: center; }
+.w-lhandle::before { content: ""; position: absolute; inset: -6px -7px; } /* easier to grab */
+.w-lhandle i { width: 2px; height: 14px; border-radius: 1000px; background: #fff; pointer-events: none; }
+
+body.looping #w-loop { display: block; }
+/* With a loop set, the playhead dot shows where you are: no blue "played" bar peeking out under the loop. */
+body.looping #w-progress { display: none; }
+body.looping .w-lhandle { display: grid; }
 #w-loop-btn.on { background: var(--yellow); color: #1e1e1e; }
 #w-loop-btn.on svg { color: #1e1e1e; }
-#w-loop-btn.on:hover { background: #fce9a9; }
+#w-loop-btn.on:hover { background: #f8d38c; }
 
 /* Playback speed: label + value, the value opens a menu */
 .pb-split { position: relative; display: flex; }
@@ -707,7 +715,7 @@ body.looping #w-loop, body.looping .w-lhandle { display: block; }
 .pb-split > .pb-btn:nth-child(2) { border-radius: 0 8px 8px 0; border-left: 1px solid rgba(0, 0, 0, 0.24); gap: 8px; min-width: 52px; justify-content: space-between; }
 .pb-split.changed > .pb-btn { background: rgba(42, 134, 255, 0.2); color: #b5d3ff; }
 .pb-split.changed > .pb-btn svg { color: #b5d3ff; }
-svg.caret { width: 9px; height: 5px; color: #fff; overflow: visible; }
+svg.caret { width: 14px; height: 14px; color: #fff; }
 .menu { position: absolute; right: 0; bottom: calc(100% + 8px); min-width: 168px; padding: 4px; border-radius: 10px; background: #312f2f; box-shadow: var(--shadow); z-index: 30; display: flex; flex-direction: column; }
 .menu button { height: 28px; padding: 0 10px; border: none; border-radius: 6px; background: none; color: #fff; font: 400 12px var(--mono); text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .menu button:hover { background: var(--btn); }
@@ -729,20 +737,20 @@ body.magnified.panning #vframe { cursor: grabbing; }
 .w-quick { display: none; }
 body.quicktrim .w-normal { display: none; }
 body.quicktrim .w-quick { display: flex; gap: 12px; }
-body.quicktrim #w-scrub { height: 24px; margin: 0 18px; } /* same height as normal: centred on the time labels; room for the knobs outside either end */
-body.quicktrim #w-track, body.quicktrim #w-scrub:hover #w-track { top: 10.5px; height: 3px; background: rgba(255, 255, 255, 0.22); }
+body.quicktrim #w-scrub { height: 24px; margin: 0 8px; } /* same height as normal: centred on the time labels; room for the knobs outside either end */
+body.quicktrim #w-track, body.quicktrim #w-scrub:hover #w-track { top: 9px; height: 6px; background: rgba(255, 255, 255, 0.22); }
 body.quicktrim #w-progress, body.quicktrim #w-loop, body.quicktrim .w-lhandle, body.quicktrim #w-buffer { display: none; }
-body.quicktrim #w-head, body.quicktrim #w-scrub:hover #w-head { top: -10px; width: 11px; height: 11px; margin-left: -5.5px; transform: none; box-shadow: 0 0 0 2px var(--panel); }
-body.quicktrim #w-head::after { content: ""; position: absolute; left: 4.5px; top: 11px; width: 2px; height: 11px; background: #fff; border-radius: 1px; }
+body.quicktrim #w-head, body.quicktrim #w-scrub:hover #w-head,
+body.looping #w-head, body.looping #w-scrub:hover #w-head { top: -13px; width: 10px; height: 23px; margin-left: -5px; border-radius: 0; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 23'%3E%3Cpath fill='white' d='M5 0C7.76 0 10 2.24 10 5C10 7.13 8.66 8.95 6.78 9.67C6.34 9.84 6 10.24 6 10.72V22C6 22.55 5.55 23 5 23C4.45 23 4 22.55 4 22V10.72C4 10.24 3.66 9.84 3.22 9.67C1.34 8.95 0 7.13 0 5C0 2.24 2.24 0 5 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; box-shadow: none; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)); transform: none; z-index: 7; }
 .w-dim { display: none; }
 #w-sel, .w-handle { display: none; position: absolute; }
 body.quicktrim #w-sel { display: block; }
 body.quicktrim .w-handle { display: grid; }
 #w-sel { top: 9px; height: 6px; border-radius: 3px; background: var(--trim); z-index: 2; pointer-events: none; }
-.w-handle { top: 2.5px; width: 12px; height: 19px; margin-left: -12px; border-radius: 5px; background: var(--trim); box-shadow: 0 0 0 2px var(--panel); z-index: 3; cursor: ew-resize; place-items: center; }
+.w-handle { top: 1px; height: 22px; z-index: 3; cursor: ew-resize; place-items: center; }
 .w-handle::before { content: ""; position: absolute; inset: -8px -8px; } /* easier to grab */
-.w-handle i { width: 2px; height: 9px; border-radius: 1px; background: rgba(15, 30, 50, 0.55); pointer-events: none; }
-.w-handle:hover, .w-handle.active { background: #c2ddff; }
+.w-handle i { width: 2px; height: 14px; border-radius: 1000px; background: #fff; pointer-events: none; }
+
 #w-bubble { position: absolute; top: -24px; transform: translateX(-50%); padding: 3px 7px; border-radius: 6px; background: var(--blue); color: #fff; font: 400 12px var(--mono); font-variant-numeric: tabular-nums; pointer-events: none; z-index: 6; white-space: nowrap; }
 #w-trim-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; max-width: 330px; color: var(--text-2); }
 .w-trim-main { font: 400 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -762,14 +770,14 @@ body.quicktrim .w-handle { display: grid; }
   #w-full-edit, #w-split { font-size: 0; gap: 0; }
 }
 @media (max-width: 1500px) {
-  #w-back10, #w-fwd10, #btn-open, #btn-help { display: none; }
+  #w-back10, #w-fwd10, #btn-help { display: none; }
 }
 @media (max-width: 1250px) {
   #w-back5, #w-fwd5 { display: none; }
   #w-loop-btn { font-size: 0; gap: 0; }
 }
 @media (max-width: 1050px) {
-  #btn-prev, #btn-next { display: none !important; }
+  #btn-open { display: none; }
   #w-trim { font-size: 0; gap: 0; }
   .pbar { gap: 12px; }
 }
@@ -906,19 +914,18 @@ body.quicktrim .w-quick { width: 212px; justify-content: flex-end; }
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   z-index: 9;
 }
-.tip::after { content: ""; position: absolute; left: calc(50% + var(--tail)); top: calc(100% - 1px); width: 28px; height: 12px; margin-left: -14px; background: inherit; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 12'%3E%3Cpath d='M0 0C7.5 0 10.2 2.4 11.7 6.6Q14 12.6 16.3 6.6C17.8 2.4 20.5 0 28 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 12'%3E%3Cpath d='M0 0C7.5 0 10.2 2.4 11.7 6.6Q14 12.6 16.3 6.6C17.8 2.4 20.5 0 28 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; }
+.tip::after { content: ""; position: absolute; left: calc(50% + var(--tail)); top: calc(100% - 1px); width: 32px; height: 8px; margin-left: -16px; /* a short, sturdy tail: wide base, round tip */ background: inherit; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 8'%3E%3Cpath d='M0 0C7.6 0 10.1 1.1 11.7 3.4C12.9 5.3 13.8 7.2 16 7.2C18.2 7.2 19.1 5.3 20.3 3.4C21.9 1.1 24.4 0 32 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 8'%3E%3Cpath d='M0 0C7.6 0 10.1 1.1 11.7 3.4C12.9 5.3 13.8 7.2 16 7.2C18.2 7.2 19.1 5.3 20.3 3.4C21.9 1.1 24.4 0 32 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; }
 .tip small { display: block; font: 400 10px/14px var(--mono); color: rgba(255, 255, 255, 0.62); }
 #w-bubble.tip.loop { background: var(--yellow); color: #1e1e1e; }
 /* Where the tail's tip lands */
-#w-hover.tip { bottom: 30px; }          /* over the track */
-#w-bubble.tip { bottom: 35px; }         /* over a loop end */
-body.quicktrim #w-bubble.tip { bottom: 35px; } /* over a trim knob */
-body.quicktrim #w-hover.tip { bottom: 48px; }  /* above the playhead dot */
-#tl-hover.tip, #tl-bubble.tip { top: -4px; }
+#w-hover.tip { bottom: 27px; }          /* over the track */
+#w-bubble.tip { bottom: 32px; }         /* over a loop end */
+body.quicktrim #w-bubble.tip { bottom: 32px; } /* over a trim knob */
+body.quicktrim #w-hover.tip { bottom: 45px; }  /* above the playhead dot */
+#tl-hover.tip, #tl-bubble.tip { top: -1px; }
 
 /* Knobs sit just outside the kept part (4px gap), so the playhead at the start/end shows beside them, not on them. */
-#w-h-in { margin-left: -16px; }
-#w-h-out { margin-left: 4px; }
+
 /* While a knob's tooltip is up, the playhead dot (at that same time) steps aside. */
 body.knobtip #w-head { opacity: 0; }
 #w-save-split.single > #w-trim-save { border-radius: 8px; }
@@ -957,16 +964,11 @@ body.mode-watch #watchbar .btn.update { background: rgba(20, 174, 92, 0.16); col
 body.mode-watch #watchbar #w-track { background: rgba(0, 0, 0, 0.14); }
 body.mode-watch #watchbar #w-buffer { background: rgba(0, 0, 0, 0.06); }
 body.mode-watch #watchbar #w-head { background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16), 0 1px 4px rgba(0, 0, 0, 0.3); }
-body.mode-watch #watchbar .w-lhandle { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 1px 3px rgba(0, 0, 0, 0.25); }
 #w-volume::-webkit-slider-runnable-track { background: rgba(0, 0, 0, 0.16); }
 /* Quick trim on glass: the kept part and its knobs in the accent blue, playhead in ink */
-body.quicktrim.mode-watch #watchbar #w-track { background: rgba(0, 0, 0, 0.16); }
+body.quicktrim.mode-watch #watchbar #w-track { background: rgba(0, 0, 0, 0.16); } /* 6px, like the design */
 body.mode-watch #watchbar #w-sel { background: var(--blue); }
-body.mode-watch #watchbar .w-handle { background: var(--blue); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 1px 3px rgba(0, 0, 0, 0.25); }
-body.mode-watch #watchbar .w-handle i { background: rgba(255, 255, 255, 0.9); }
-body.mode-watch #watchbar .w-handle:hover, body.mode-watch #watchbar .w-handle.active { background: var(--blue-hover); }
-body.quicktrim.mode-watch #watchbar #w-head { background: var(--ink); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85); }
-body.quicktrim.mode-watch #watchbar #w-head::after { background: var(--ink); }
+body.quicktrim.mode-watch #watchbar #w-head, body.looping.mode-watch #watchbar #w-head { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 23'%3E%3Cpath fill='white' d='M5 0C7.76 0 10 2.24 10 5C10 7.13 8.66 8.95 6.78 9.67C6.34 9.84 6 10.24 6 10.72V22C6 22.55 5.55 23 5 23C4.45 23 4 22.55 4 22V10.72C4 10.24 3.66 9.84 3.22 9.67C1.34 8.95 0 7.13 0 5C0 2.24 2.24 0 5 0Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat; box-shadow: none; }
 /* Menus from the bar: the same white glass */
 .menu.frost {
   background: rgba(252, 252, 254, 0.9);
@@ -982,3 +984,35 @@ body.quicktrim.mode-watch #watchbar #w-head::after { background: var(--ink); }
 .menu.frost button { font-weight: 500; }
 .menu.frost .sep { background: rgba(0, 0, 0, 0.1); }
 .menu.frost input { background: rgba(0, 0, 0, 0.06); color: var(--ink); }
+#w-head { transition: transform 0.1s, opacity 0.08s; }
+/* With anchors on the bar (loop), the track keeps the design's 6px on hover so the playhead's stem always meets it. */
+body.looping #w-scrub:hover #w-track, body.looping #w-scrub.drag #w-track, body.looping #w-scrub:hover #w-loop, body.looping #w-scrub.drag #w-loop { top: 9px; height: 6px; }
+
+/* Anchors (Figma 22:290 + concave join): a 14x22 body centred on its edge, flowing into the 6px line
+   on its inner side through tight 3px concave fillets. Drawn shapes (CSS boxes can't curve inward);
+   solid, the same colour as the line they flow into. Start anchors' neck points right, end anchors' left. */
+.w-handle, .w-lhandle { width: 17px; background-size: 100% 100%; background-repeat: no-repeat; }
+#w-h-in, #w-la { margin-left: -7px; padding-right: 3px; }  /* body x-7..x+7, neck to x+10 */
+#w-h-out, #w-lb { margin-left: -10px; padding-left: 3px; } /* neck from x-10, body x-7..x+7 */
+#w-h-in { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%232a86ff%27%20d%3D%27M5%200%20H9%20Q14%200%2014%205%20V5%20A3%203%200%200%200%2017%208%20H17%20V14%20H17%20A3%203%200%200%200%2014%2017%20V17%20Q14%2022%209%2022%20H5%20Q0%2022%200%2017%20V5%20Q0%200%205%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-h-out { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%232a86ff%27%20d%3D%27M12%200%20H8%20Q3%200%203%205%20V5%20A3%203%200%200%201%200%208%20H0%20V14%20H0%20A3%203%200%200%201%203%2017%20V17%20Q3%2022%208%2022%20H12%20Q17%2022%2017%2017%20V5%20Q17%200%2012%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-h-in:hover, #w-h-in.active { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%234796ff%27%20d%3D%27M5%200%20H9%20Q14%200%2014%205%20V5%20A3%203%200%200%200%2017%208%20H17%20V14%20H17%20A3%203%200%200%200%2014%2017%20V17%20Q14%2022%209%2022%20H5%20Q0%2022%200%2017%20V5%20Q0%200%205%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-h-out:hover, #w-h-out.active { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%234796ff%27%20d%3D%27M12%200%20H8%20Q3%200%203%205%20V5%20A3%203%200%200%201%200%208%20H0%20V14%20H0%20A3%203%200%200%201%203%2017%20V17%20Q3%2022%208%2022%20H12%20Q17%2022%2017%2017%20V5%20Q17%200%2012%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-la { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%23f5c46a%27%20d%3D%27M5%200%20H9%20Q14%200%2014%205%20V5%20A3%203%200%200%200%2017%208%20H17%20V14%20H17%20A3%203%200%200%200%2014%2017%20V17%20Q14%2022%209%2022%20H5%20Q0%2022%200%2017%20V5%20Q0%200%205%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-lb { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%23f5c46a%27%20d%3D%27M12%200%20H8%20Q3%200%203%205%20V5%20A3%203%200%200%201%200%208%20H0%20V14%20H0%20A3%203%200%200%201%203%2017%20V17%20Q3%2022%208%2022%20H12%20Q17%2022%2017%2017%20V5%20Q17%200%2012%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-la:hover, #w-la.active { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%23f8d38c%27%20d%3D%27M5%200%20H9%20Q14%200%2014%205%20V5%20A3%203%200%200%200%2017%208%20H17%20V14%20H17%20A3%203%200%200%200%2014%2017%20V17%20Q14%2022%209%2022%20H5%20Q0%2022%200%2017%20V5%20Q0%200%205%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+#w-lb:hover, #w-lb.active { background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2017%2022%27%3E%3Cpath%20fill%3D%27%23f8d38c%27%20d%3D%27M12%200%20H8%20Q3%200%203%205%20V5%20A3%203%200%200%201%200%208%20H0%20V14%20H0%20A3%203%200%200%201%203%2017%20V17%20Q3%2022%208%2022%20H12%20Q17%2022%2017%2017%20V5%20Q17%200%2012%200%20Z%27%2F%3E%3C%2Fsvg%3E"); }
+
+/* Hugeicons are drawn for a 1.5 stroke; high-resolution screens show them as designed.
+   (The heavier stroke is only for 100% scaling, where thin lines blur.) */
+@media (min-resolution: 1.5dppx) {
+  svg, .pb-icon svg, .pb-square svg { stroke-width: 1.5; }
+}
+
+/* Icon buttons: no default button padding (it pushed icons 2px off-centre), and the same
+   36px rounded hover square as the play button. */
+.pb-icon, .pb-square, .play-btn, .icon-btn, .mini { padding: 0; }
+.pb-icon, .pb-tools .pb-icon, #w-fullscreen { width: 36px; height: 36px; border-radius: 8px; }
+.pb-skip { gap: 0; }
+/* Time labels: 14px is the size whose digits centre exactly on the seek bar's line at 100%, 125%
+   and 200% scaling (measured on rendered pixels); 13px and 12px sit up to 0.75px off. */

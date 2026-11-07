@@ -156,8 +156,7 @@ async function openVideo(path) {
   video.currentTime = 0;
   invoke('sibling_videos', { path }).then((list) => {
     if (token !== S.openToken) return;
-    S.siblings = list;
-    renderNav();
+    S.siblings = list; // for PgUp / PgDn
   });
   loadFilmstrip(token);
   loadWaveform(token);
@@ -175,13 +174,6 @@ function describe(i) {
   return parts.join(' · ');
 }
 
-function renderNav() {
-  const idx = S.siblings.indexOf(S.path);
-  // Only show the arrows when the folder has other videos.
-  $('#btn-prev').hidden = $('#btn-next').hidden = S.siblings.length < 2;
-  $('#btn-prev').disabled = idx <= 0;
-  $('#btn-next').disabled = idx < 0 || idx >= S.siblings.length - 1;
-}
 function gotoSibling(delta) {
   const idx = S.siblings.indexOf(S.path);
   const next = S.siblings[idx + delta];
@@ -833,7 +825,8 @@ function renderTimeline() {
     const m = document.createElement('div');
     m.className = 'sfx-marker' + (s.id === S.selectedSfx ? ' selected' : '');
     m.dataset.id = s.id;
-    m.textContent = s.name;
+    m.innerHTML = `${icon('sound')}<span></span>`;
+    m.lastChild.textContent = s.name;
     m.title = `${s.name} at ${fmt(s.at)}. Drag to move, click for volume`;
     const width = s.duration ? tToX(s.at + s.duration) - tToX(s.at) : 40;
     place(m, tToX(s.at), Math.max(18, width));
@@ -1599,18 +1592,39 @@ let lastWatchT = -1;
 const frameCount = () => Math.max(1, Math.round(duration() * fps()));
 const frameAt = (t) => clamp(Math.floor(t * fps() + 1e-6) + 1, 1, frameCount());
 /** Watch speed: 1 -> "1.0", 0.25 -> "0.25" (like the design's "1.0"). */
+/** The labels either side of the seek bar: whole seconds (the tooltips show the exact time). */
+const fmtLabel = (t) => formatTime(t, false);
 const fmtRate = (v) => (Number.isInteger(v) ? v.toFixed(1) : fmtSpeed(v));
 function renderWatchTime(t) {
   lastWatchT = t;
   const d = duration() || 1;
   const pct = `${clamp(t / d, 0, 1) * 100}%`;
   $('#w-progress').style.width = pct;
-  $('#w-head').style.left = pct;
+  $('#w-head').style.left = playheadLeft(t, d);
   const n = frameAt(t);
   const time = $('#w-time');
   if (S.quick && S.mode === 'watch') return; // while trimming the labels show the trim's start and end
-  time.textContent = settings.showFrames ? `Frame ${n.toLocaleString()}` : fmt(t);
+  time.textContent = settings.showFrames ? `Frame ${n.toLocaleString()}` : fmtLabel(t);
   time.title = `${settings.showFrames ? fmt(t) : `Frame ${n.toLocaleString()}`} of ${frameCount().toLocaleString()} · ${Math.round(fps() * 100) / 100} fps\nClick to show ${settings.showFrames ? 'the time' : 'frame numbers'}`;
+}
+/**
+ * Where to draw the playhead. With anchors on the bar (trim knobs or loop ends), it never sits
+ * under one: within an anchor's width it's drawn against the anchor's inner edge instead
+ * (right of the start anchor, left of the end anchor), as in the design.
+ */
+function playheadLeft(t, d) {
+  const w = scrub.clientWidth;
+  const { a, b } = S.loop;
+  const ends = S.quick ? [S.inT, S.outT] : a != null && b != null ? [a, b] : null;
+  if (!ends || !w) return `${clamp(t / d, 0, 1) * 100}%`;
+  let x = clamp(t / d, 0, 1) * w;
+  // Anchor bodies span 7px either side of their time; on the inner side the fillet and neck add 3px.
+  const [s0, e0] = ends.map((v) => (v / d) * w);
+  const OUT = 8; // outer side: the 2px stem's centre touching the body
+  const IN = 11; // inner side: just past the fillet
+  if (x > s0 - OUT && x < s0 + IN) x = x >= s0 - 0.5 ? s0 + IN : s0 - OUT;
+  if (x > e0 - IN && x < e0 + OUT) x = x <= e0 + 0.5 ? e0 - IN : e0 + OUT;
+  return `${x}px`;
 }
 function renderWatch() {
   const r = S.watchRate;
@@ -1621,8 +1635,8 @@ function renderWatch() {
     // Fixed widths (monospace): the bar never changes size as the numbers change.
     const d = duration();
     const longest = (a) => Math.max(...a.map((x) => x.length));
-    $('#w-time').style.minWidth = `${longest([fmt(d), `Frame ${frameCount().toLocaleString()}`])}ch`;
-    $('#w-total').style.minWidth = `${longest([fmt(d), `of ${frameCount().toLocaleString()}`])}ch`;
+    $('#w-time').style.minWidth = `${longest([fmtLabel(d), `Frame ${frameCount().toLocaleString()}`])}ch`;
+    $('#w-total').style.minWidth = `${longest([fmtLabel(d), `of ${frameCount().toLocaleString()}`])}ch`;
   }
   // Loop: yellow button, yellow section with two draggable ends on the seek bar
   const { a, b } = S.loop;
@@ -1657,10 +1671,10 @@ const scrubT = (e) => {
   return clamp((e.clientX - r.left) / r.width, 0, 1) * duration();
 };
 /** The time bubble above the seek bar while dragging a handle. */
-/** Time tooltip over the bar. dx: nudge it onto a trim knob (they sit just outside their time). */
-function scrubBubble(t, kind, sub = '', dx = 0) {
+/** Time tooltip over the bar. dx: set (even 0) when it belongs to an anchor, whose playhead then steps aside. */
+function scrubBubble(t, kind, sub = '', dx = null) {
   const b = $('#w-bubble');
-  document.body.classList.toggle('knobtip', t != null && !!dx);
+  document.body.classList.toggle('knobtip', t != null && (dx != null || kind === 'loop'));
   if (t == null) return (b.hidden = true);
   const w = scrub.clientWidth;
   b.hidden = false;
@@ -1668,15 +1682,23 @@ function scrubBubble(t, kind, sub = '', dx = 0) {
   b.innerHTML = `<span></span>${sub ? '<small></small>' : ''}`;
   b.firstChild.textContent = fmt(t);
   if (sub) b.lastChild.textContent = sub;
-  placeTip(b, (t / (duration() || 1)) * w + dx, w);
+  placeTip(b, (t / (duration() || 1)) * w + (dx || 0), w);
 }
-const KNOB_DX = { in: -10, out: 10 }; // knob centres: 4px gap + half of a 12px knob
-/** Put a tooltip over x, kept inside [0, w]; its tail still points at x. */
-function placeTip(el, x, w) {
-  const half = Math.max(30, el.offsetWidth / 2 + 2);
-  const left = clamp(x, half, Math.max(half, w - half));
+const KNOB_DX = { in: 0, out: 0 }; // anchors are centred on their time
+/**
+ * Put a tooltip over x (px within its container). The pill may extend past the container (over
+ * the time labels or the video) and only stops at the window's edges, so the tail rarely has to
+ * slide; when it does, it stays under the pill's flat bottom edge, never its rounded corners.
+ */
+function placeTip(el, x) {
+  const half = el.offsetWidth / 2;
+  const box = el.offsetParent ? el.offsetParent.getBoundingClientRect() : { left: 0 };
+  const minL = -box.left + half + 8;
+  const maxL = innerWidth - box.left - half - 8;
+  const left = clamp(x, minL, Math.max(minL, maxL));
   el.style.left = `${left}px`;
-  el.style.setProperty('--tail', `${clamp(x - left, -half + 14, half - 14)}px`);
+  const flat = Math.max(0, half - 13 - 16); // 13px corner radius, 16px half the tail
+  el.style.setProperty('--tail', `${clamp(x - left, -flat, flat)}px`);
 }
 scrub.addEventListener('pointerdown', (e) => {
   if (!S.path || e.button !== 0) return;
@@ -1805,12 +1827,15 @@ function dragLoopEnd(e, which) {
   scrub.setPointerCapture(e.pointerId);
   const wasPlaying = !video.paused;
   video.pause();
+  // The end sits beside its time (outside the loop): keep the grab point so it doesn't jump.
+  const grab = scrubT(e) - S.loop[which];
+  scrubBubble(S.loop[which], 'loop', '', KNOB_DX[which === 'a' ? 'in' : 'out']);
   const move = (ev) => {
-    const t = snapFrame(scrubT(ev));
+    const t = snapFrame(scrubT(ev) - grab);
     if (which === 'a') S.loop.a = clamp(t, 0, S.loop.b - minLoop());
     else S.loop.b = clamp(t, S.loop.a + minLoop(), duration());
     seek(S.loop[which]); // show the frame under the handle
-    scrubBubble(S.loop[which], 'loop');
+    scrubBubble(S.loop[which], 'loop', '', KNOB_DX[which === 'a' ? 'in' : 'out']);
     renderWatch();
   };
   const up = () => {
@@ -1976,8 +2001,8 @@ function renderQuickTrim() {
   const plan = planExport(S.info, { ...quickEdit(), exact: false });
   q.lead = !q.exact && S.keyframeFor === S.inT && plan.snapDelta > 0.0005 ? plan.snapDelta : 0;
   // The labels either side of the bar show the trim's start and end.
-  $('#w-time').textContent = fmt(S.inT);
-  $('#w-total').textContent = fmt(S.outT);
+  $('#w-time').textContent = fmtLabel(S.inT);
+  $('#w-total').textContent = fmtLabel(S.outT);
   $('#w-time').title = 'Start of the trim';
   $('#w-total').title = `End of the trim · ${fmt(S.outT - S.inT)} long`;
   const exactCopy = canExactCopy(S.info);
@@ -2389,8 +2414,6 @@ async function pickAndOpen() {
 }
 $('#btn-open').addEventListener('click', pickAndOpen);
 $('#btn-open-empty').addEventListener('click', pickAndOpen);
-$('#btn-prev').addEventListener('click', () => gotoSibling(-1));
-$('#btn-next').addEventListener('click', () => gotoSibling(1));
 $('#btn-help').addEventListener('click', () => $('#help').showModal());
 $('#e-help').addEventListener('click', () => $('#help').showModal());
 $('#btn-play').addEventListener('click', togglePlay);

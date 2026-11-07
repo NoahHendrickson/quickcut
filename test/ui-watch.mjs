@@ -230,7 +230,7 @@ await log('loop on at 4s');
 const sb = await page.locator('#w-scrub').boundingBox();
 const lb = await page.locator('#w-lb').boundingBox();
 const dur = await page.evaluate(() => document.querySelector('#video').duration);
-await page.mouse.move(lb.x + lb.width / 2, lb.y + lb.height / 2); await page.mouse.down();
+await page.mouse.move(lb.x + 10 /* the end anchor body: its time */, lb.y + lb.height / 2); await page.mouse.down();
 await page.mouse.move(sb.x + (6 / dur) * sb.width, lb.y + lb.height / 2, { steps: 8 });
 await page.screenshot({ path: `${SHOTS}/70-loop-drag.png` });
 await page.mouse.up(); await page.waitForTimeout(150);

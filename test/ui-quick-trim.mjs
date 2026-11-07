@@ -181,11 +181,11 @@ const scrubBox = async () => page.locator('#w-scrub').boundingBox();
 const dragTo = async (sel, frac, shot) => {
   const h = await page.locator(sel).boundingBox();
   const sb = await scrubBox();
-  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+  const body = h.x + (sel === '#w-h-in' ? 7 : 10); // the anchor body's centre = its time (the neck adds 3px inside)
+  await page.mouse.move(body, h.y + h.height / 2);
   await page.mouse.down();
   // The knob's time is its inner edge (knobs sit outside the kept part): aim that edge at frac.
-  const edge = sel === '#w-h-in' ? h.x + h.width + 4 : h.x - 4; // 4px gap between knob and its time
-  await page.mouse.move(sb.x + sb.width * frac + (h.x + h.width / 2 - edge), h.y + h.height / 2, { steps: 8 });
+  await page.mouse.move(sb.x + sb.width * frac, h.y + h.height / 2, { steps: 8 });
   await page.waitForTimeout(250);
   if (shot) await page.screenshot({ path: `${SHOTS}/${shot}.png` });
   await page.mouse.up();

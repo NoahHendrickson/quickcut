@@ -172,7 +172,7 @@ for (const w of [960, 1100, 1200, 1320, 1440, 1600, 1920]) {
     const scrub = document.querySelector('#w-scrub').getBoundingClientRect();
     const overflow = [...document.querySelectorAll('#watchbar button')].some((b) => b.offsetParent && b.getBoundingClientRect().right > bar.right + 0.5);
     const shown = (sel) => !!document.querySelector(sel).offsetParent;
-    return `${w}px window: seek bar ${Math.round(scrub.width)}px (${Math.round((scrub.width / bar.width) * 100)}% of bar)${overflow ? '  OVERFLOW' : ''} | ±10s ${shown('#w-back10') ? 'yes' : 'no'}, labels ${getComputedStyle(document.querySelector('#w-full-edit')).fontSize !== '0px' ? 'yes' : 'no'}, open/help ${shown('#btn-help') ? 'yes' : 'no'}`;
+    return `${w}px window: seek bar ${Math.round(scrub.width)}px (${Math.round((scrub.width / bar.width) * 100)}% of bar)${overflow ? '  OVERFLOW' : ''} | ±10s ${shown('#w-back10') ? 'yes' : 'no'}, labels ${getComputedStyle(document.querySelector('#w-full-edit')).fontSize !== '0px' ? 'yes' : 'no'}, open ${shown('#btn-open') ? 'yes' : 'no'}, help ${shown('#btn-help') ? 'yes' : 'no'}`;
   }, w));
 }
 console.log(rows.join('\n'));
