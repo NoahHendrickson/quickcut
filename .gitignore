@@ -5,3 +5,8 @@ dist/
 .DS_Store
 *.key
 *.key.pub
+
+# UI-test screenshots stay local (the scripts write new ones to /tmp/qc-demo/shots);
+# only the one the README shows is in the repo.
+screenshots/*
+!screenshots/71-loop.png

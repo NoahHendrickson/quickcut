@@ -12,4 +12,6 @@ for ext in mp4 mkv; do
     -f lavfi -i "sine=f=1000:r=48000:d=10,volume=enable='not(between(t,5,5.1))':volume=0" \
     -c:v libx264 -bf 3 -g 60 -keyint_min 60 -sc_threshold 0 -pix_fmt yuv420p -c:a aac -b:a 192k sync.$ext
 done
+# A format the webview can't play (the UI tests use it for the preview-copy path).
+ffmpeg -v error -y -f lavfi -i testsrc2=s=1920x1080:r=60 -f lavfi -i "sine=f=440:r=48000" -t 6 -c:v prores_ks -profile:v 0 -pix_fmt yuv422p10le -c:a pcm_s16le prores.mov
 echo "test media in $D"

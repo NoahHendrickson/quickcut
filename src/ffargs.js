@@ -487,6 +487,11 @@ export function buildExportArgs(src, plan, opts) {
   // HEVC in MP4/MOV as hvc1, the form every player (incl. Apple's) accepts.
   if (plan.mode !== 'reencode' && src.vcodec === 'hevc' && ['mp4', 'm4v', 'mov'].includes(plan.ext)) args.push('-tag:v', 'hvc1');
   if (['mp4', 'mov', 'm4v'].includes(plan.ext)) args.push('-movflags', '+faststart');
+  // Copied sound next to a re-encoded picture: the copy begins at the keyframe before the
+  // start (that's where the demuxer seeks to), and Matroska, unlike MP4, can't hide that
+  // lead-in: the whole video would start late, behind sound from before the cut. Leave out
+  // what comes before the start (at most one audio packet, ~20 ms, of the wanted sound goes too).
+  if (plan.mode === 'reencode' && !aMap && src.audioCount > 0 && plan.ext === 'mkv') args.push('-ss', '0');
   args.push('-max_muxing_queue_size', '4096');
   args.push(outputPath);
   return args;
@@ -522,11 +527,12 @@ export function formatTime(t, withMs = true) {
   return withMs ? `${base}.${String(ms).padStart(3, '0')}` : base;
 }
 
-/** Parse "1:23.4", "83.4", "1:02:03" into seconds. */
+/** Parse "1:23.4", "83.4", "1:02:03" into seconds. NaN for anything else, including "". */
 export function parseTime(str) {
-  const parts = String(str).trim().split(':').map(Number);
-  if (!parts.length || parts.some((p) => !isFinite(p))) return NaN;
-  return parts.reduce((acc, p) => acc * 60 + p, 0);
+  const parts = String(str).trim().split(':').map((p) => p.trim());
+  // Number('') is 0: an emptied field must not count as "0:00".
+  if (parts.some((p) => p === '' || !isFinite(Number(p)))) return NaN;
+  return parts.reduce((acc, p) => acc * 60 + Number(p), 0);
 }
 
 // ---------------------------------------------------------------------------

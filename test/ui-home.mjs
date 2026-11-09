@@ -1,13 +1,14 @@
 // Home screen: recent videos, a folder of videos with thumbnails, the update banner.
 // Runs the real frontend in Chrome with a mock Tauri bridge (real ffmpeg for thumbnails).
-// Usage: node test/ui-home.mjs src  (needs the media from test/make-media.sh in /tmp/qc-test)
+// Usage: node test/ui-home.mjs  (needs the media from test/make-media.sh in /tmp/qc-test)
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
-const SRC = process.argv[2];
+const SRC = process.argv[2] || fileURLToPath(new URL('../src', import.meta.url));
 const SHOTS = '/tmp/qc-demo/shots';
 const DIR = '/tmp/qc-home';
 fs.mkdirSync(SHOTS, { recursive: true });

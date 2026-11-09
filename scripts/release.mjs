@@ -42,8 +42,9 @@ const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 pkg.version = version;
 fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
-// 2. Tests must pass.
+// 2. Tests must pass: ffmpeg end to end + Rust, then the UI flows in headless Chrome.
 run('npm', ['test']);
+run('npm', ['run', 'test:ui']);
 
 // 3. Build the signed Windows installer (cross-compiled from macOS).
 const keyPath = path.join(os.homedir(), '.tauri/quickcut.key');

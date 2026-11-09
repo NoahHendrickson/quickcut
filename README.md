@@ -42,9 +42,11 @@ Tauri 2 (Rust) + plain HTML/JS UI, driving ffmpeg.
 ```sh
 npm install
 npm test                      # ffmpeg end-to-end tests (incl. A/V sync, lossless splits, zoom) + Rust tests
-node test/ui-flow.mjs src     # UI flows in headless Chrome (needs playwright-core)
-node test/ui-home.mjs src     # home screen: recent videos, folder grid, update button
+npm run test:ui               # every UI flow in headless Chrome (needs Google Chrome installed)
+node test/run-ui.mjs flow     # just one of them: test/ui-flow.mjs
 ```
+
+The UI scripts (`test/ui-*.mjs`) share `test/harness.mjs`: the real frontend with a mock Tauri bridge that runs real ffmpeg, served under the app's Content-Security-Policy (from `tauri.conf.json`). A script fails if a step times out, a `check` fails, or the page logs an error, which includes anything the policy blocks. They write their screenshots to `/tmp/qc-demo/shots`.
 
 ### Building on macOS for Windows
 

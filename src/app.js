@@ -116,10 +116,19 @@ function setTool(name) {
 // ---------------------------------------------------------------------------
 // Opening videos
 // ---------------------------------------------------------------------------
-async function openVideo(path) {
+/** An export or split is writing files: the video it reads from has to stay open. */
+const working = () => S.busy === 'export' || S.busy === 'split';
+
+/** afterReplace: the export itself reopening the file it just swapped in for the original. */
+async function openVideo(path, { afterReplace = false } = {}) {
   await engineReady;
-  if (S.busy === 'export') return toast('Wait for the export to finish first');
-  if (S.busy === 'proxy') await cancelJob();
+  if (working() && !afterReplace) return toast(`Wait for the ${S.busy === 'split' ? 'split' : 'export'} to finish first`);
+  if (S.busy === 'proxy') {
+    // Stop the preview copy being made, and wait until that has let go (S.busy is free again).
+    const job = proxyJob;
+    await cancelJob();
+    if (job) await job.catch(() => {});
+  }
   const token = ++S.openToken;
   let info;
   try {
@@ -183,21 +192,27 @@ function gotoSibling(delta) {
 
 // The webview can't decode every codec (e.g. HEVC without the Windows HEVC
 // extension). Then build a small H.264 preview copy; export always uses the original.
+let proxyJob = null; // the ffmpeg run making a preview copy, while there is one
 async function fallbackToProxy() {
   if (S.usingProxy || !S.path || S.busy) return;
   const token = S.openToken;
   S.usingProxy = true;
   try {
-    const [proxy, exists] = await invoke('proxy_path', { path: S.path });
+    const [proxy, exists, part] = await invoke('proxy_path', { path: S.path });
     if (!exists) {
       S.busy = 'proxy';
+      cancelRequested = false;
       overlay("This video's format can't be previewed directly, so QuickCut is making a preview copy. Your export still uses the original at full quality.", 0);
       try {
-        await invoke('run_ffmpeg', { args: buildProxyArgs(S.path, proxy), duration: duration() });
+        // Written under a temporary name: only a finished copy is ever reused.
+        proxyJob = invoke('run_ffmpeg', { args: buildProxyArgs(S.path, part), duration: duration(), output: part });
+        await proxyJob;
+        await invoke('commit_proxy', { part, path: proxy });
       } catch (e) {
-        invoke('remove_file', { path: proxy });
+        invoke('remove_file', { path: part });
         throw e;
       } finally {
+        proxyJob = null;
         S.busy = null;
       }
     }
@@ -1167,16 +1182,19 @@ function setIn(t) {
   if (!S.path) return;
   // Start at the beginning of the frame on screen (Watch steps land mid-frame).
   t = Math.floor(t * fps() + 1e-6) / fps();
-  S.inT = clamp(t, 0, duration());
+  // Never an empty selection: a start at the very end still leaves the shortest trim.
+  S.inT = clamp(t, 0, Math.max(0, duration() - minTrim()));
   if (S.inT >= S.outT) S.outT = duration();
   afterTrimChange();
 }
 function setOut(t) {
   if (!S.path) return;
-  S.outT = clamp(t, 0, duration());
+  S.outT = clamp(t, Math.min(minTrim(), duration()), duration());
   if (S.outT <= S.inT) S.inT = 0;
   afterTrimChange();
 }
+/** The shortest trim: one frame, or 50 ms for very high frame rates. */
+const minTrim = () => Math.max(1 / fps(), 0.05);
 function afterTrimChange() {
   requestKeyframe();
   syncAll();
@@ -1360,7 +1378,13 @@ T.event.listen('ffmpeg-progress', (e) => {
   }
 });
 
-const cancelJob = () => invoke('cancel_ffmpeg');
+// Stop was pressed. Every ffmpeg run checks this first: a click that lands between two
+// parts of a split finds nothing running to stop, and must still stop the rest.
+let cancelRequested = false;
+const cancelJob = () => {
+  cancelRequested = true;
+  return invoke('cancel_ffmpeg');
+};
 
 let confirmTimer;
 /** The Export button: first click shows the save options, the next one saves. */
@@ -1392,12 +1416,15 @@ async function doExport() {
   }
   S.confirmReplace = false;
   clearTimeout(confirmTimer);
-  const source = S.path;
+  // The video this export reads, pinned for the whole run.
+  const src = { path: S.path, info: S.info };
+  const source = src.path;
   const startedAt = performance.now();
   const result = $('#export-result');
   result.hidden = true;
 
   S.busy = 'export';
+  cancelRequested = false;
   S.progress = null;
   $('#export-progress').hidden = false;
   $('#export-bar').style.width = '0%';
@@ -1409,11 +1436,11 @@ async function doExport() {
   let total = 1;
   try {
     const base = currentEdit();
-    if (planExport(S.info, base).mode !== 'reencode') base.keyframeIn = await ensureKeyframe();
+    if (planExport(src.info, base).mode !== 'reencode') base.keyframeIn = await ensureKeyframe();
     else if (S.encodersReady) await S.encodersReady;
     const edits = [base];
     total = edits.length;
-    const plans = edits.map((e) => planExport(S.info, e));
+    const plans = edits.map((e) => planExport(src.info, e));
     const totalDur = plans.reduce((a, p) => a + p.outDuration, 0) || 1;
     const pad = String(total).length;
 
@@ -1425,7 +1452,7 @@ async function doExport() {
         : await invoke('output_path', { src: source, ext: plan.ext, name: saveName(total > 1 ? i + 1 : 0, pad), dir: settings.outDir || null });
       current = outputPath;
       S.progress = { base: done / totalDur, weight: plan.outDuration / totalDur, label: total > 1 ? `Part ${i + 1} of ${total} · ` : '' };
-      await runExport(plan, outputPath);
+      await runExport(src, plan, outputPath);
       saved.push(outputPath);
       current = null;
       done += plan.outDuration;
@@ -1437,7 +1464,7 @@ async function doExport() {
       $('#export-status').textContent = 'Replacing the original…';
       saved[0] = await invoke('replace_original', { original: source, temp: saved[0] });
       headline = 'Replaced (the old version is in the Recycle Bin)';
-      await openVideo(saved[0]);
+      await openVideo(saved[0], { afterReplace: true });
     }
     const secs = (performance.now() - startedAt) / 1000;
     const took = secs < 10 ? secs.toFixed(1) : Math.round(secs);
@@ -1470,19 +1497,26 @@ async function doExport() {
   }
 }
 
-/** Run one export; if a GPU encoder fails, retry once on the CPU. */
-async function runExport(plan, outputPath) {
-  let encoder = pickEncoder(S.info, S.encoders, settings.encoder);
-  const run = (enc) => invoke('run_ffmpeg', {
-    args: buildExportArgs(S.info, plan, { inputPath: S.path, outputPath, encoder: enc, quality: settings.quality }),
-    duration: plan.outDuration,
-  });
+/**
+ * Run one export of src ({ path, info }: the video as it was when the job started, whatever
+ * is open by now); if a GPU encoder fails, retry once on the CPU.
+ */
+async function runExport(src, plan, outputPath) {
+  let encoder = pickEncoder(src.info, S.encoders, settings.encoder);
+  const run = async (enc) => {
+    if (cancelRequested) throw 'cancelled';
+    await invoke('run_ffmpeg', {
+      args: buildExportArgs(src.info, plan, { inputPath: src.path, outputPath, encoder: enc, quality: settings.quality }),
+      duration: plan.outDuration,
+      output: outputPath,
+    });
+  };
   try {
     await run(encoder);
   } catch (e) {
     if (String(e) === 'cancelled' || plan.mode !== 'reencode' || encoder.vendor === 'cpu') throw e;
     $('#export-status').textContent = 'Graphics card encoder failed, retrying on the processor…';
-    encoder = pickEncoder(S.info, S.encoders.filter((n) => n.startsWith('lib')), 'cpu');
+    encoder = pickEncoder(src.info, S.encoders.filter((n) => n.startsWith('lib')), 'cpu');
     await run(encoder);
   }
 }
@@ -2035,17 +2069,19 @@ async function quickSave() {
   if (!S.quick || S.busy || !S.path) return;
   if (S.outT - S.inT < 0.05) return toast('The selection is too short');
   video.pause();
+  const src = { path: S.path, info: S.info };
   S.busy = 'export';
+  cancelRequested = false;
   renderQuickTrim();
   $('#w-trim-save').textContent = 'Saving…';
   let outputPath = null;
   try {
     const edit = quickEdit();
     edit.keyframeIn = await ensureKeyframe(); // decides lossless-exact vs keyframe vs re-encode
-    const plan = planExport(S.info, edit);
+    const plan = planExport(src.info, edit);
     if (plan.mode === 'reencode' && S.encodersReady) await S.encodersReady;
-    outputPath = await invoke('output_path', { src: S.path, ext: plan.ext, name: defaultSaveName(), dir: settings.outDir || null });
-    await runExport(plan, outputPath);
+    outputPath = await invoke('output_path', { src: src.path, ext: plan.ext, name: defaultSaveName(), dir: settings.outDir || null });
+    await runExport(src, plan, outputPath);
     if (S.quick) S.quick.saved = outputPath;
     toast(`Saved ${basename(outputPath)}`, 3500);
   } catch (e) {
@@ -2212,7 +2248,10 @@ async function runSplit() {
   const d = duration();
   const parts = partsFromPoints(0, d, SP.points);
   if (parts.length < 2) return;
+  // The video being split, pinned for the whole run: every part must come from it.
+  const src = { path: S.path, info: S.info };
   S.busy = 'split';
+  cancelRequested = false;
   SP.saved = [];
   const startedAt = performance.now();
   let current = null;
@@ -2223,15 +2262,15 @@ async function runSplit() {
       endDts: p.index < parts.length ? SP.dts.get(p.outT) ?? null : null,
       slow: { enabled: false, start: 0, end: 0, speed: 1 }, sfx: [], zooms: [], origVolume: 1,
     }));
-    const plans = edits.map((e) => planExport(S.info, e));
+    const plans = edits.map((e) => planExport(src.info, e));
     const pad = String(plans.length).length;
     let done = 0;
     for (let i = 0; i < plans.length; i++) {
-      const name = `${stemOf(S.path)}_part${String(i + 1).padStart(pad, '0')}`;
-      const outputPath = await invoke('output_path', { src: S.path, ext: plans[i].ext, name, dir: settings.outDir || null });
+      const name = `${stemOf(src.path)}_part${String(i + 1).padStart(pad, '0')}`;
+      const outputPath = await invoke('output_path', { src: src.path, ext: plans[i].ext, name, dir: settings.outDir || null });
       current = outputPath;
       S.progress = { base: done / d, weight: plans[i].outDuration / d, label: `Part ${i + 1} of ${plans.length} · ` };
-      await runExport(plans[i], outputPath);
+      await runExport(src, plans[i], outputPath);
       SP.saved.push(outputPath);
       current = null;
       done += plans[i].outDuration;
@@ -2373,7 +2412,7 @@ async function checkForUpdate(manual = false) {
 }
 async function installUpdate() {
   if (!pendingUpdate) return;
-  if (S.busy === 'export') return toast('Finish or cancel the export first');
+  if (working()) return toast(`Finish or cancel the ${S.busy === 'split' ? 'split' : 'export'} first`);
   const btns = [$('#btn-update'), $('#home-update')];
   const label = (t) => btns.forEach((b) => (b.textContent = t));
   btns.forEach((b) => (b.disabled = true));

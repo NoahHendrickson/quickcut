@@ -8,8 +8,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -24,13 +26,150 @@ static ENGINE_DIR: OnceLock<PathBuf> = OnceLock::new();
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "m4v", "webm", "avi", "ts", "m2ts", "mts", "flv", "wmv"];
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "opus", "m4a", "aac", "flac", "wma"];
 
+/// The one ffmpeg job (export or preview copy) that may run at a time.
+struct Job {
+    id: u64,
+    child: Child,
+    /// The file it is writing: removed if the app quits before it finishes.
+    output: Option<PathBuf>,
+}
+
 struct AppState {
     server: server::MediaServer,
-    job: Mutex<Option<Child>>,
-    cancelled: Mutex<bool>,
+    job: Mutex<Option<Job>>,
+    next_job: AtomicU64,
 }
 
 type CmdResult<T> = Result<T, String>;
+
+/// Kill a job's ffmpeg and wait until it is gone. Returns the file it was writing.
+fn stop_job(mut job: Job) -> Option<PathBuf> {
+    let _ = job.child.kill();
+    let _ = job.child.wait();
+    job.output
+}
+
+/// How a job's wait ended.
+#[derive(Debug)]
+enum JobEnd {
+    Exited(ExitStatus),
+    /// Cancelled, or replaced by a newer job: either way its ffmpeg was killed on purpose.
+    Stopped,
+    Lost,
+}
+
+/// One look at job `id`: None while it is still running. The slot is only locked
+/// for the look itself, so a cancel can always get in.
+fn poll_job(slot: &Mutex<Option<Job>>, id: u64) -> Option<JobEnd> {
+    let mut slot = slot.lock().unwrap();
+    match slot.as_mut() {
+        Some(job) if job.id == id => match job.child.try_wait() {
+            Ok(Some(status)) => {
+                slot.take();
+                Some(JobEnd::Exited(status))
+            }
+            Ok(None) => None,
+            Err(_) => {
+                if let Some(job) = slot.take() {
+                    stop_job(job);
+                }
+                Some(JobEnd::Lost)
+            }
+        },
+        // The slot is empty or holds another job: this one was taken out and killed.
+        _ => Some(JobEnd::Stopped),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Preview cache (thumbnails, filmstrips, waveforms, preview copies) in the temp folder
+// ---------------------------------------------------------------------------
+
+const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+const CACHE_MAX_BYTES: u64 = 10 << 30;
+
+fn cache_dir() -> CmdResult<PathBuf> {
+    let dir = std::env::temp_dir().join("QuickCut-previews");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Is this cache file there and complete? Using it also marks it as just used,
+/// so pruning removes the least recently used files first.
+fn cache_hit(p: &Path) -> bool {
+    let ok = p.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+    if ok {
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(p) {
+            let _ = f.set_modified(SystemTime::now());
+        }
+    }
+    ok
+}
+
+/// The name a cache file is written under before it is moved into place. Same
+/// folder and extension (ffmpeg picks the format from it), unique per attempt.
+fn part_path(out: &Path) -> PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("tmp");
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    out.with_file_name(format!("{stem}.{}-{n}.part.{ext}", std::process::id()))
+}
+
+/// Produce a cache file: `make` writes it under a temporary name, and it only
+/// gets its real name once complete. An interrupted or failed run can then never
+/// leave a broken file that is served from the cache for good.
+fn write_cached(out: &Path, make: impl FnOnce(&Path) -> CmdResult<()>) -> CmdResult<()> {
+    let part = part_path(out);
+    let made = make(&part).and_then(|_| match part.metadata() {
+        Ok(m) if m.len() > 0 => Ok(()),
+        _ => Err("nothing was produced".to_string()),
+    });
+    let moved = made.and_then(|_| std::fs::rename(&part, out).map_err(|e| e.to_string()));
+    if moved.is_err() {
+        let _ = std::fs::remove_file(&part);
+        // Another request for the same file may have finished first (and be in use).
+        if cache_hit(out) {
+            return Ok(());
+        }
+    }
+    moved
+}
+
+/// Keep the cache from growing forever: drop files not used for `max_age`, then
+/// the least recently used ones until the rest fits in `max_bytes` (the most
+/// recently used file always stays, however big).
+fn prune_cache(dir: &Path, max_age: Duration, max_bytes: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let now = SystemTime::now();
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = vec![];
+    for e in rd.flatten() {
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() {
+            continue;
+        }
+        let used = m.modified().unwrap_or(now);
+        let age = now.duration_since(used).unwrap_or_default();
+        // A day-old ".part." file is what an interrupted run left behind.
+        let stale_part = e.file_name().to_string_lossy().contains(".part.") && age > Duration::from_secs(24 * 3600);
+        if age > max_age || stale_part {
+            let _ = std::fs::remove_file(e.path());
+        } else {
+            kept.push((used, m.len(), e.path()));
+        }
+    }
+    let mut total: u64 = kept.iter().map(|k| k.1).sum();
+    kept.sort();
+    kept.pop(); // the most recently used one stays
+    for (_, len, path) in kept {
+        if total <= max_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ffmpeg / ffprobe discovery and spawning
@@ -185,8 +324,15 @@ struct Progress {
 
 /// Run ffmpeg with the given args, streaming progress events ("ffmpeg-progress").
 /// `duration` is the expected output length in seconds (for the progress ratio).
+/// `output` is the file being written, so quitting mid-job can clean it up.
 #[tauri::command]
-async fn run_ffmpeg(app: AppHandle, state: State<'_, AppState>, args: Vec<String>, duration: f64) -> CmdResult<()> {
+async fn run_ffmpeg(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: Vec<String>,
+    duration: f64,
+    output: Option<String>,
+) -> CmdResult<()> {
     let mut child = tool("ffmpeg")
         .args(&args)
         .stdout(Stdio::piped())
@@ -196,13 +342,13 @@ async fn run_ffmpeg(app: AppHandle, state: State<'_, AppState>, args: Vec<String
 
     let stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
+    let id = state.next_job.fetch_add(1, Ordering::Relaxed);
     {
-        let mut job = state.job.lock().unwrap();
-        if let Some(mut old) = job.take() {
-            let _ = old.kill();
+        let mut slot = state.job.lock().unwrap();
+        if let Some(old) = slot.take() {
+            stop_job(old);
         }
-        *job = Some(child);
-        *state.cancelled.lock().unwrap() = false;
+        *slot = Some(Job { id, child, output: output.map(PathBuf::from) });
     }
 
     // Drain stderr on its own thread so ffmpeg never blocks on a full pipe.
@@ -232,31 +378,18 @@ async fn run_ffmpeg(app: AppHandle, state: State<'_, AppState>, args: Vec<String
     });
 
     // Wait for exit without holding the lock (so cancel can kill it).
-    let status = loop {
-        {
-            let mut job = state.job.lock().unwrap();
-            match job.as_mut() {
-                Some(c) => match c.try_wait() {
-                    Ok(Some(status)) => {
-                        job.take();
-                        break Some(status);
-                    }
-                    Ok(None) => {}
-                    Err(_) => break None,
-                },
-                None => break None, // killed by cancel
-            }
+    let end = loop {
+        if let Some(end) = poll_job(&state.job, id) {
+            break end;
         }
         tokio_sleep(50).await;
     };
     let _ = progress_thread.join();
     let err = err_thread.join().unwrap_or_default();
 
-    if *state.cancelled.lock().unwrap() {
-        return Err("cancelled".into());
-    }
-    match status {
-        Some(s) if s.success() => {
+    match end {
+        JobEnd::Stopped => Err("cancelled".into()),
+        JobEnd::Exited(s) if s.success() => {
             let _ = app.emit("ffmpeg-progress", Progress { ratio: 1.0, speed: String::new() });
             Ok(())
         }
@@ -274,10 +407,9 @@ async fn tokio_sleep(ms: u64) {
 
 #[tauri::command]
 fn cancel_ffmpeg(state: State<'_, AppState>) {
-    *state.cancelled.lock().unwrap() = true;
-    if let Some(mut c) = state.job.lock().unwrap().take() {
-        let _ = c.kill();
-        let _ = c.wait();
+    let job = state.job.lock().unwrap().take();
+    if let Some(job) = job {
+        stop_job(job);
     }
 }
 
@@ -287,9 +419,10 @@ fn media_url(state: State<'_, AppState>, path: String) -> String {
 }
 
 /// Where the low-res preview copy of an unplayable video lives (temp dir, keyed
-/// by path + size + mtime). Returns (path, already_exists).
+/// by path + size + mtime). Returns (path, already_exists, name to write it under):
+/// the copy is made under the temporary name, then `commit_proxy` moves it into place.
 #[tauri::command]
-fn proxy_path(path: String) -> CmdResult<(String, bool)> {
+fn proxy_path(path: String) -> CmdResult<(String, bool, String)> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     let mut h = DefaultHasher::new();
     path.hash(&mut h);
@@ -297,12 +430,21 @@ fn proxy_path(path: String) -> CmdResult<(String, bool)> {
     if let Ok(m) = meta.modified() {
         m.hash(&mut h);
     }
-    let dir = std::env::temp_dir().join("QuickCut-previews");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // "-1080": copies from older versions (720p, lower quality) are never reused.
-    let p = dir.join(format!("{:016x}-1080.mp4", h.finish()));
-    let exists = p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    Ok((p.to_string_lossy().to_string(), exists))
+    let p = cache_dir()?.join(format!("{:016x}-1080.mp4", h.finish()));
+    let exists = cache_hit(&p);
+    Ok((p.to_string_lossy().to_string(), exists, part_path(&p).to_string_lossy().to_string()))
+}
+
+/// A finished preview copy gets its real name (see `proxy_path`). Only inside the cache folder.
+#[tauri::command]
+fn commit_proxy(part: String, path: String) -> CmdResult<()> {
+    let dir = cache_dir()?;
+    let (part, path) = (PathBuf::from(part), PathBuf::from(path));
+    if part.parent() != Some(dir.as_path()) || path.parent() != Some(dir.as_path()) {
+        return Err("not a preview file".into());
+    }
+    std::fs::rename(&part, &path).map_err(|e| e.to_string())
 }
 
 /// Filmstrip for the timeline: `count` thumbnails `height` px tall, evenly spread
@@ -323,10 +465,8 @@ async fn filmstrip(path: String, start: Option<f64>, duration: f64, count: u32, 
         if let Ok(m) = meta.modified() {
             m.hash(&mut h);
         }
-        let dir = std::env::temp_dir().join("QuickCut-previews");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let out = dir.join(format!("strip-{:016x}.jpg", h.finish()));
-        if out.is_file() {
+        let out = cache_dir()?.join(format!("strip-{:016x}.jpg", h.finish()));
+        if cache_hit(&out) {
             return Ok(out.to_string_lossy().to_string());
         }
 
@@ -352,11 +492,11 @@ async fn filmstrip(path: String, start: Option<f64>, duration: f64, count: u32, 
             graph.push_str(&format!("{stack}hstack=inputs={count},scale=out_range=full,format=yuvj420p"));
             c.args(["-filter_complex", &graph]);
         }
-        c.args(["-frames:v", "1", "-update", "1", "-q:v", "5"]).arg(&out);
-        run_capture(c)?;
-        if !out.is_file() {
-            return Err("no thumbnails produced".into());
-        }
+        c.args(["-frames:v", "1", "-update", "1", "-q:v", "5"]);
+        write_cached(&out, |part| {
+            c.arg(part);
+            run_capture(c).map(|_| ())
+        })?;
         Ok(out.to_string_lossy().to_string())
     })
     .await
@@ -376,10 +516,8 @@ async fn waveform(path: String, tracks: u32, width: u32, height: u32) -> CmdResu
         if let Ok(m) = meta.modified() {
             m.hash(&mut h);
         }
-        let dir = std::env::temp_dir().join("QuickCut-previews");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let out = dir.join(format!("wave-{:016x}.png", h.finish()));
-        if out.is_file() {
+        let out = cache_dir()?.join(format!("wave-{:016x}.png", h.finish()));
+        if cache_hit(&out) {
             return Ok(Some(out.to_string_lossy().to_string()));
         }
         let mix = if tracks > 1 {
@@ -393,9 +531,12 @@ async fn waveform(path: String, tracks: u32, width: u32, height: u32) -> CmdResu
         );
         let mut c = tool("ffmpeg");
         c.args(["-v", "error", "-y", "-i"]).arg(&path);
-        c.args(["-vn", "-filter_complex", &graph, "-frames:v", "1", "-update", "1"]).arg(&out);
-        run_capture(c)?;
-        Ok(out.is_file().then(|| out.to_string_lossy().to_string()))
+        c.args(["-vn", "-filter_complex", &graph, "-frames:v", "1", "-update", "1"]);
+        write_cached(&out, |part| {
+            c.arg(part);
+            run_capture(c).map(|_| ())
+        })?;
+        Ok(Some(out.to_string_lossy().to_string()))
     })
     .await
 }
@@ -499,12 +640,12 @@ async fn thumbnail(path: String, height: u32) -> CmdResult<(String, f64)> {
         if let Ok(m) = meta.modified() {
             m.hash(&mut h);
         }
-        let dir = std::env::temp_dir().join("QuickCut-previews");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let dir = cache_dir()?;
         let key = format!("{:016x}", h.finish());
         let out = dir.join(format!("thumb-{key}.jpg"));
         let len_file = dir.join(format!("thumb-{key}.txt"));
-        if out.is_file() {
+        if cache_hit(&out) {
+            cache_hit(&len_file); // keep the pair the same age
             let len = std::fs::read_to_string(&len_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0.0);
             return Ok((out.to_string_lossy().to_string(), len));
         }
@@ -519,8 +660,12 @@ async fn thumbnail(path: String, height: u32) -> CmdResult<(String, f64)> {
         for t in [at, 0.0] {
             let mut c = tool("ffmpeg");
             c.args(["-v", "error", "-y", "-ss", &format!("{t:.3}"), "-noaccurate_seek", "-i"]).arg(&path);
-            c.args(["-an", "-vf", &vf, "-frames:v", "1", "-update", "1", "-q:v", "4"]).arg(&out);
-            if run_capture(c).is_ok() && out.is_file() {
+            c.args(["-an", "-vf", &vf, "-frames:v", "1", "-update", "1", "-q:v", "4"]);
+            let made = write_cached(&out, |part| {
+                c.arg(part);
+                run_capture(c).map(|_| ())
+            });
+            if made.is_ok() {
                 let _ = std::fs::write(&len_file, len.to_string());
                 return Ok((out.to_string_lossy().to_string(), len));
             }
@@ -855,9 +1000,15 @@ fn main() {
             if let Ok(dir) = app.path().app_local_data_dir() {
                 let _ = ENGINE_DIR.set(dir.join("ffmpeg"));
             }
+            // Old previews go, off the main thread (the folder can hold many files).
+            std::thread::spawn(|| {
+                if let Ok(dir) = cache_dir() {
+                    prune_cache(&dir, CACHE_MAX_AGE, CACHE_MAX_BYTES);
+                }
+            });
             Ok(())
         })
-        .manage(AppState { server, job: Mutex::new(None), cancelled: Mutex::new(false) })
+        .manage(AppState { server, job: Mutex::new(None), next_job: AtomicU64::new(1) })
         .invoke_handler(tauri::generate_handler![
             startup_file,
             probe,
@@ -867,6 +1018,7 @@ fn main() {
             cancel_ffmpeg,
             media_url,
             proxy_path,
+            commit_proxy,
             filmstrip,
             waveform,
             remove_file,
@@ -891,8 +1043,19 @@ fn main() {
             check_update,
             install_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running QuickCut");
+        .build(tauri::generate_context!())
+        .expect("error while running QuickCut")
+        .run(|app, event| {
+            // Quitting mid-export: stop ffmpeg (on Windows it would carry on in the
+            // background without us) and don't leave its half-written file behind.
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                let job = state.job.lock().unwrap().take();
+                if let Some(out) = job.and_then(stop_job) {
+                    let _ = std::fs::remove_file(out);
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -927,6 +1090,94 @@ mod tests {
         let tmp = temp_output_path(src_s, "mp4".into()).unwrap();
         assert_eq!(Path::new(&tmp), dir.join("clip.quickcut-tmp.mp4"));
         assert_eq!(std::fs::read(&src).unwrap(), b"original");
+    }
+
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn file_aged(dir: &Path, name: &str, len: usize, age_secs: u64) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, vec![0u8; len]).unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(age_secs)).unwrap();
+        p
+    }
+
+    #[test]
+    fn cache_prunes_old_then_least_recently_used() {
+        let dir = fresh_dir("qc-prune-test");
+        let day = 24 * 3600;
+        let ancient = file_aged(&dir, "ancient.jpg", 10, 40 * day);
+        let stale_part = file_aged(&dir, "x.1-0.part.mp4", 10, 2 * day);
+        let live_part = file_aged(&dir, "y.1-1.part.mp4", 10, 60);
+        let old = file_aged(&dir, "old.mp4", 600, 3 * day);
+        let mid = file_aged(&dir, "mid.mp4", 600, 2 * day);
+        let new = file_aged(&dir, "new.mp4", 600, day);
+
+        prune_cache(&dir, Duration::from_secs(30 * day), 1300);
+        assert!(!ancient.exists(), "unused for longer than the limit");
+        assert!(!stale_part.exists(), "left over from an interrupted run");
+        assert!(live_part.exists(), "may still be being written");
+        assert!(!old.exists(), "least recently used goes first when over the size limit");
+        assert!(mid.exists() && new.exists());
+
+        // Using a file makes it the most recent one, and that one always stays.
+        assert!(cache_hit(&mid));
+        prune_cache(&dir, Duration::from_secs(30 * day), 0);
+        assert!(mid.exists() && !new.exists() && !live_part.exists());
+    }
+
+    #[test]
+    fn cache_files_only_appear_when_complete() {
+        let dir = fresh_dir("qc-cache-write-test");
+        let out = dir.join("strip-1.jpg");
+
+        let failed = write_cached(&out, |part| {
+            std::fs::write(part, b"half").unwrap();
+            Err("ffmpeg died".into())
+        });
+        assert!(failed.is_err() && !out.exists());
+        let empty = write_cached(&out, |part| std::fs::write(part, b"").map_err(|e| e.to_string()));
+        assert!(empty.is_err() && !out.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no partial files left behind");
+
+        write_cached(&out, |part| {
+            assert_eq!(part.extension().unwrap(), "jpg");
+            std::fs::write(part, b"done").map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"done");
+        assert!(cache_hit(&out) && !cache_hit(&dir.join("missing.jpg")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_job_only_ends_its_own_wait() {
+        let sleeper = |secs: &str| Command::new("sleep").arg(secs).spawn().unwrap();
+        let slot = Mutex::new(Some(Job { id: 1, child: sleeper("30"), output: None }));
+        assert!(poll_job(&slot, 1).is_none(), "still running");
+
+        // A newer job takes the slot: the old wait ends as stopped and leaves the new one alone.
+        let old = slot.lock().unwrap().replace(Job { id: 2, child: sleeper("0"), output: None });
+        stop_job(old.unwrap());
+        assert!(matches!(poll_job(&slot, 1), Some(JobEnd::Stopped)));
+        let end = loop {
+            if let Some(end) = poll_job(&slot, 2) {
+                break end;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(matches!(end, JobEnd::Exited(s) if s.success()));
+
+        // Cancel empties the slot.
+        *slot.lock().unwrap() = Some(Job { id: 3, child: sleeper("30"), output: None });
+        let job = slot.lock().unwrap().take();
+        stop_job(job.unwrap());
+        assert!(matches!(poll_job(&slot, 3), Some(JobEnd::Stopped)));
     }
 }
 

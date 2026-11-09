@@ -263,11 +263,18 @@ for (const ext of ['mp4', 'mkv']) {
     // A 2s freeze at 4.5 pushes the flash and the beep 2s later, together.
     ['freeze', { inT: 3.5, outT: 8, freezes: [{ at: 4.5, hold: 2 }], sfx: [], origVolume: 1 }, 1.5 + 2],
     ['freeze-slow-sfx', { inT: 3.5, outT: 8, freezes: [{ at: 4.2, hold: 1 }], slow: { enabled: true, start: 4, end: 6, speed: 0.5 }, sfx: [{ path: path.join(dir, 'boom.wav'), at: 5, volume: 1 }], origVolume: 0 }, 0.5 + 1 / 0.5 + 1],
+    // Zoom only: the picture is re-encoded from 3.5 while the sound is copied. The copy must
+    // not bring along the sound from the keyframe before the start (3.0) and push the video later.
+    ['zoom', { inT: 3.5, outT: 8, zooms: [{ start: 6, end: 7.5, amount: 2, fx: 0.5, fy: 0.5, ease: 'smooth' }], sfx: [], origVolume: 1 }, 1.5],
   ];
   for (let [name, edit, expected] of cases) {
     const r = run(`sync-${ext}-${name}`, `sync.${ext}`, edit);
     if (!r) continue;
     const t = syncTimes(r.outPath);
+    if (name === 'zoom') {
+      check(`sync ${ext} zoom: sound is copied, not re-encoded`, r.plan.mode === 'reencode' && !r.plan.audioProcessed);
+      check(`sync ${ext} zoom: 4.5s long, nothing from before the start`, near(r.res.info.duration, 4.5, 0.04), String(r.res.info.duration));
+    }
     // Video may start up to ~2 frames late in MP4 (B-frame delay, players start there);
     // what matters is that picture and sound stay together: within one 60fps frame.
     // Lossless copies now start on the exact frame (edit list), so the flash is at 5.0 - 3.5.
@@ -415,7 +422,8 @@ check('pickEncoder 10-bit h264 -> hevc', pickEncoder({ vcodec: 'h264', bitDepth:
 check('pickEncoder prefers nvenc', pickEncoder({ vcodec: 'h264', bitDepth: 8 }, ['libx264', 'h264_nvenc', 'h264_qsv']).name === 'h264_nvenc');
 check('pickEncoder cpu pref', pickEncoder({ vcodec: 'h264', bitDepth: 8 }, ['libx264', 'h264_nvenc'], 'cpu').name === 'libx264');
 check('pickEncoder av1 w/o av1 enc -> hevc', pickEncoder({ vcodec: 'av1', bitDepth: 8 }, ['libx265', 'hevc_amf']).name === 'hevc_amf');
-check('parseTime', parseTime('1:02.5') === 62.5 && parseTime('1:00:00') === 3600);
+check('parseTime', parseTime('1:02.5') === 62.5 && parseTime('1:00:00') === 3600 && parseTime(' 7 ') === 7);
+check('parseTime: an empty field is not 0:00', ['', '  ', '1:', ':30', 'abc'].every((s) => Number.isNaN(parseTime(s))));
 check('formatTime', formatTime(62.5) === '1:02.500' && formatTime(3725.25) === '1:02:05.250');
 
 console.log(failures ? `\n${failures} FAILED` : '\nAll passed');
